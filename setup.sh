@@ -31,6 +31,9 @@ mkdir -p "$INSTALL_DIR"
 cp "$SCRIPT_DIR/$BUDDY_SCRIPT" "$INSTALL_DIR/$BUDDY_SCRIPT"
 chmod +x "$INSTALL_DIR/$BUDDY_SCRIPT"
 
+# Copy buddy package
+cp -r "$SCRIPT_DIR/buddy" "$INSTALL_DIR/buddy"
+
 echo "  ✓ Installed to $INSTALL_DIR"
 
 # Create launcher symlink
