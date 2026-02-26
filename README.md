@@ -104,8 +104,9 @@ Type the displayed code snippet as fast as you can. Your WPM and accuracy are tr
 
 ## Features
 
-### AI-Powered Content
-- **Chat** — Full conversational AI via Anthropic API (Claude Haiku). Press `t` to type.
+### AI-Powered Content (Claude Haiku 4.5 via Anthropic API)
+- **Buddy chat** — Conversational AI that remembers your session. Press `t` to type. Shows "You: ..." while Buddy thinks.
+- **Proactive questions** — Buddy asks YOU things every ~2 minutes when you're idle. How's the project? What are you building? He remembers your answers and references them.
 - **Fresh quotes & jokes** — AI-generated, never-repeating within a session.
 - **Code roasting** — Reads your `git diff` and lovingly roasts your code. Falls back to a pool of generic roasts without API.
 - **Commit message poet** — Reads staged changes and generates dramatic, over-the-top commit messages.
@@ -113,6 +114,7 @@ Type the displayed code snippet as fast as you can. Your WPM and accuracy are tr
 
 ### Terminal Awareness
 - **Shell history reactions** — Watches `~/.zsh_history` or `~/.bash_history` and reacts to commands like `rm -rf`, `git push --force`, `sudo`, `npm install`, etc.
+- **Git commit detection** — Watches `.git/COMMIT_EDITMSG` for new commits and celebrates every push with sparkles + mood boost.
 - **Build runner** — Auto-detects your build system (npm, make, cargo, go, python) and runs builds in the background. Shows success/failure.
 - **Uptime & git streak** — Track how long you've been coding and your daily commit streak.
 - **Clipboard watcher** — Detects code pastes from clipboard and makes cheeky comments.
@@ -196,7 +198,7 @@ terminal-bot/
 │   ├── ansi.py            # ANSI escape codes, colors, cursor control
 │   ├── data.py            # All static data: quotes, jokes, trivia, achievements, reactions
 │   ├── ai_features.py     # Code roast, commit poet, non-repeating pools
-│   ├── awareness.py       # Shell history watcher, build runner, uptime, git streak, clipboard
+│   ├── awareness.py       # Shell history watcher, build runner, uptime, git streak, clipboard, commit watcher
 │   ├── games.py           # Typing race, trivia, pomodoro timer
 │   ├── achievements.py    # Achievement tracker with JSON persistence
 │   ├── productivity.py    # TODO scanner, PR checker

@@ -97,6 +97,24 @@ IDLE_MESSAGES = [
     "Pro tip: Ctrl+Z is your best friend.",
 ]
 
+BUDDY_QUESTIONS = [
+    "What are you building right now?",
+    "How's the project going?",
+    "Any bugs driving you crazy today?",
+    "When did you last take a break?",
+    "What's the hardest part of what you're working on?",
+    "Are you close to shipping something?",
+    "What language are you coding in today?",
+    "Did you learn anything new this week?",
+    "How many tabs do you have open? Be honest.",
+    "What's the next feature you want to build?",
+    "Are you doing TDD or living dangerously?",
+    "Coffee or tea today?",
+    "How long have you been at this today?",
+    "Is there anything you're stuck on?",
+    "What would make today a win for you?",
+]
+
 FAREWELL = [
     "Goodbye, you magnificent coder!",
     "See you next time, terminal warrior!",

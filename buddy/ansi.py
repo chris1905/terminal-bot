@@ -4,6 +4,9 @@ ESC = "\033["
 HIDE_CURSOR = f"{ESC}?25l"
 SHOW_CURSOR = f"{ESC}?25h"
 CLEAR_SCREEN = f"{ESC}2J"
+ERASE_LINE = f"{ESC}2K"
+ALT_SCREEN_ON = "\033[?1049h"
+ALT_SCREEN_OFF = "\033[?1049l"
 RESET = f"{ESC}0m"
 BOLD = f"{ESC}1m"
 DIM = f"{ESC}2m"
@@ -25,36 +28,91 @@ def move(row, col):
 
 
 class C:
-    """Color palette."""
-    BODY       = fg(100, 200, 255)
-    BODY_DARK  = fg(60, 140, 200)
-    EYE_WHITE  = fg(255, 255, 255)
-    PUPIL      = fg(30, 30, 30)
-    MOUTH      = fg(255, 100, 120)
+    """Color palette — neon-retro terminal aesthetic."""
+    # Body gradient (cyan → blue)
+    BODY       = fg(80, 220, 255)
+    BODY_MID   = fg(60, 180, 240)
+    BODY_DARK  = fg(40, 140, 220)
+    BODY_SHADE = fg(30, 100, 180)
+
+    # Eyes
+    EYE_WHITE  = fg(200, 230, 255)
+    EYE_SCREEN = fg(40, 60, 90)
+    PUPIL      = fg(255, 255, 255)
+    PUPIL_GLOW = fg(120, 200, 255)
+
+    # Mouth
+    MOUTH      = fg(255, 120, 160)
+    MOUTH_GLOW = fg(255, 80, 130)
+
+    # Expressions
     HAPPY      = fg(255, 220, 50)
-    BLUSH      = fg(255, 150, 150)
-    SPEECH     = fg(200, 255, 200)
+    BLUSH      = fg(255, 150, 170)
+    HEART      = fg(255, 70, 110)
+    STAR       = fg(255, 240, 80)
+    ZZZ        = fg(160, 140, 255)
+    COFFEE     = fg(200, 140, 70)
+
+    # Antenna LED colors
+    LED_IDLE   = fg(80, 255, 180)
+    LED_TALK   = fg(80, 200, 255)
+    LED_HAPPY  = fg(255, 220, 50)
+    LED_LOVE   = fg(255, 80, 130)
+    LED_THINK  = fg(255, 180, 60)
+    LED_SLEEP  = fg(100, 80, 180)
+    LED_PARTY  = fg(255, 100, 255)
+    LED_ALERT  = fg(255, 80, 80)
+
+    # UI elements
+    SPEECH     = fg(180, 240, 200)
+    SPEECH_DIM = fg(80, 140, 100)
     ACCENT     = fg(255, 180, 50)
-    SHADOW     = fg(60, 60, 80)
-    HEART      = fg(255, 80, 100)
-    STAR       = fg(255, 255, 100)
-    ZZZ        = fg(150, 150, 255)
-    COFFEE     = fg(180, 120, 60)
+    ACCENT2    = fg(120, 200, 255)
+    SHADOW     = fg(50, 50, 70)
+    SHADOW_MID = fg(40, 40, 55)
+    SHADOW_DEEP = fg(30, 30, 40)
+
+    # Status & effects
     FIRE       = fg(255, 100, 30)
-    COOL       = fg(100, 200, 255)
+    COOL       = fg(100, 220, 255)
     PARTY      = fg(255, 100, 255)
-    INPUT      = fg(180, 220, 255)
-    INPUT_BG   = bg(40, 45, 65)
     THINKING   = fg(255, 200, 100)
-    GREEN      = fg(100, 255, 100)
-    RED        = fg(255, 80, 80)
+    INPUT      = fg(180, 220, 255)
+    INPUT_BG   = bg(35, 40, 60)
+
+    # Standard
+    GREEN      = fg(100, 255, 140)
+    RED        = fg(255, 90, 90)
     YELLOW     = fg(255, 220, 80)
     CYAN       = fg(80, 220, 255)
     MAGENTA    = fg(220, 100, 255)
     ORANGE     = fg(255, 160, 50)
-    GREY       = fg(140, 140, 140)
-    WHITE      = fg(255, 255, 255)
-    # Skin-specific
+    GREY       = fg(120, 120, 140)
+    WHITE      = fg(240, 240, 255)
+
+    # Gradient helpers for body breathing
+    BODY_BREATHE = [
+        fg(60, 200, 245),
+        fg(70, 210, 250),
+        fg(80, 220, 255),
+        fg(90, 225, 255),
+        fg(80, 220, 255),
+        fg(70, 210, 250),
+    ]
+
+    # Chest panel gradient
+    PANEL      = fg(60, 180, 255)
+    PANEL_DIM  = fg(40, 120, 200)
+    PANEL_GLOW = fg(100, 220, 255)
+
+    # Mood bar colors
+    MOOD_GREAT = fg(80, 255, 160)
+    MOOD_GOOD  = fg(160, 255, 80)
+    MOOD_OK    = fg(255, 220, 60)
+    MOOD_MEH   = fg(255, 160, 60)
+    MOOD_SAD   = fg(255, 80, 80)
+
+    # Skin-specific (kept for compatibility)
     CAT        = fg(255, 180, 100)
     DOG        = fg(200, 160, 100)
     ALIEN      = fg(100, 255, 150)

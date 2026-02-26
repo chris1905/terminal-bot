@@ -179,6 +179,63 @@ class GitStreakTracker:
         return " | ".join(parts)
 
 
+class GitCommitWatcher:
+    """Detects new git commits by watching .git/COMMIT_EDITMSG mtime."""
+
+    REACTIONS = [
+        "SHIPPED IT! Another commit in the books!",
+        "git commit -m 'legendary move'",
+        "Oooh, fresh commit smell!",
+        "The diff is real. You did that!",
+        "Version control says: nice.",
+        "One commit closer to world domination.",
+        "commit: accepted. Mood: elevated.",
+        "The git log grows stronger!",
+    ]
+
+    def __init__(self, cwd="."):
+        self.cwd = cwd
+        self._msg_path = self._find_commit_msg_file()
+        self._last_mtime = self._get_mtime()
+
+    def _find_commit_msg_file(self):
+        """Walk up from cwd to find .git/COMMIT_EDITMSG."""
+        current = os.path.abspath(self.cwd)
+        while True:
+            candidate = os.path.join(current, ".git", "COMMIT_EDITMSG")
+            if os.path.exists(candidate):
+                return candidate
+            parent = os.path.dirname(current)
+            if parent == current:
+                return None
+            current = parent
+
+    def _get_mtime(self):
+        if self._msg_path:
+            try:
+                return os.path.getmtime(self._msg_path)
+            except OSError:
+                pass
+        return None
+
+    def poll(self):
+        """Check for a new commit. Returns (commit_msg, reaction) or None."""
+        if not self._msg_path:
+            return None
+        mtime = self._get_mtime()
+        if mtime is None or mtime == self._last_mtime:
+            return None
+        self._last_mtime = mtime
+        try:
+            with open(self._msg_path, "r", errors="replace") as f:
+                raw = f.read()
+            lines = [l for l in raw.split("\n") if l.strip() and not l.startswith("#")]
+            commit_msg = lines[0].strip() if lines else "new commit"
+        except OSError:
+            commit_msg = "new commit"
+        return commit_msg, random.choice(self.REACTIONS)
+
+
 class ClipboardWatcher:
     """Watch clipboard for code pastes."""
 

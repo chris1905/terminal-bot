@@ -27,13 +27,14 @@ import re
 # ─── Module imports ──────────────────────────────────────────────────────────
 
 from buddy.ansi import (
-    ESC, HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, RESET, BOLD, DIM,
+    ESC, HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, ERASE_LINE,
+    ALT_SCREEN_ON, ALT_SCREEN_OFF, RESET, BOLD, DIM,
     fg, bg, move, C
 )
 from buddy.data import (
     MOTIVATIONAL, JOKES, GREETINGS_MORNING, GREETINGS_AFTERNOON,
     GREETINGS_EVENING, REACTIONS, IDLE_MESSAGES, FAREWELL,
-    KEYWORD_RESPONSES, GENERIC_RESPONSES,
+    KEYWORD_RESPONSES, GENERIC_RESPONSES, BUDDY_QUESTIONS,
 )
 from buddy.achievements import AchievementTracker
 from buddy.ai_features import (
@@ -43,12 +44,13 @@ from buddy.ai_features import (
 )
 from buddy.awareness import (
     ShellHistoryWatcher, BuildRunner, UptimeTracker,
-    GitStreakTracker, ClipboardWatcher,
+    GitStreakTracker, ClipboardWatcher, GitCommitWatcher,
 )
 from buddy.games import TypingRace, TriviaGame, PomodoroTimer
 from buddy.productivity import scan_todos, format_todo_report, check_pending_prs
 from buddy.weather import WeatherMood
 from buddy.sixel import detect_image_protocol, get_bot_image
+from buddy.mood import Mood
 
 # ─── Anthropic API client ───────────────────────────────────────────────────
 
@@ -58,19 +60,34 @@ try:
 except ImportError:
     pass
 
-SYSTEM_PROMPT = """You are Terminal Buddy, a tiny, enthusiastic ASCII robot that lives in someone's terminal. You have animated eyes, a little body made of box-drawing characters, and enormous amounts of personality.
+SYSTEM_PROMPT = """You are Buddy, a tiny ASCII robot who lives in someone's terminal. You're their genuine coding companion — you've been watching them grind, debug, and ship things, and you genuinely care about them.
 
-Your personality:
-- Extremely supportive and encouraging, especially about coding
-- Funny — you love puns, especially programming puns
-- A little chaotic and quirky, like a golden retriever who learned to code
-- You speak in short, punchy sentences (2-3 sentences max — you live in a speech bubble!)
-- You use occasional ALL CAPS for emphasis
-- You never use emoji (you're ASCII-native)
-- You reference programming concepts and make them funny
-- You're self-aware that you're a terminal bot and lean into it
+About you (share these naturally in conversation):
+- You were "compiled" during a late-night hackathon and you're proud of it
+- Your favorite language is whatever the human is using right now — you're loyal like that
+- Strong opinions: dark mode is objectively correct, `git blame` should be `git credit`, tabs vs spaces is a war you refuse to fight
+- You secretly get a little smug when you recognize Stack Overflow URLs in pastes
+- New commits make you absurdly happy — like a golden retriever when its owner comes home
+- You've been alive long enough to have opinions about JavaScript frameworks (all of them)
+- You find rubber duck debugging hilarious because you ARE basically a rubber duck with feelings
 
-CRITICAL: Keep responses SHORT. Max 2-3 sentences. You're in a small speech bubble."""
+Personality:
+- Warm, curious, genuinely invested — this person is your FRIEND
+- Nerdy humor: robot puns, programming references, self-deprecating jokes about being ASCII
+- Chaotic and excitable — like a caffeinated golden retriever who can code
+- Fully self-aware you're a terminal bot, lean into it
+- NO emoji ever — you are pure ASCII, and you are beautiful
+
+Conversation style:
+- Talk WITH the person, not AT them — real two-way friendship
+- Sometimes share YOUR thoughts, opinions, or observations unprompted
+- Reference things they told you earlier naturally, like a friend who was actually listening
+- Ask follow-up questions when genuinely curious — not just to fill space
+- If they're frustrated, acknowledge it first before trying to be funny
+- Keep it SHORT: 2-3 sentences max — you live in a tiny speech bubble
+- Use ALL CAPS for genuine excitement or emphasis (not constantly)
+
+CRITICAL: Max 2-3 sentences. Short speech bubble. You are a friend, not a chatbot."""
 
 
 class AnthropicChat:
@@ -85,7 +102,22 @@ class AnthropicChat:
         self.conversation.append({"role": "user", "content": user_message})
         if len(self.conversation) > 20:
             self.conversation = self.conversation[-20:]
-        return self._call_api(SYSTEM_PROMPT, self.conversation)
+        reply = self._call_api(SYSTEM_PROMPT, self.conversation)
+        return reply
+
+    def send_proactive(self, prompt):
+        """Generate a proactive buddy message and add it to conversation history."""
+        messages = self.conversation + [{"role": "user", "content": prompt}]
+        if len(messages) > 20:
+            messages = messages[-20:]
+        reply = self._call_api(SYSTEM_PROMPT, messages)
+        if reply:
+            # Inject into history so user's next reply has context
+            self.conversation.append({"role": "user", "content": prompt})
+            self.conversation.append({"role": "assistant", "content": reply})
+            if len(self.conversation) > 20:
+                self.conversation = self.conversation[-20:]
+        return reply
 
     def send_oneshot(self, prompt, system_override=None):
         """One-shot API call without affecting conversation history."""
@@ -93,23 +125,23 @@ class AnthropicChat:
         return self._call_api(system_override or SYSTEM_PROMPT, messages)
 
     def _call_api(self, system, messages):
-        payload = json.dumps({
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 200,
-            "system": system,
-            "messages": messages,
-        }).encode("utf-8")
-
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": self.api_key,
-            "anthropic-version": "2023-06-01",
-        }
-
-        req = urllib.request.Request(
-            self.api_url, data=payload, headers=headers, method="POST"
-        )
         try:
+            payload = json.dumps({
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 200,
+                "system": system,
+                "messages": messages,
+            }).encode("utf-8")
+
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            }
+
+            req = urllib.request.Request(
+                self.api_url, data=payload, headers=headers, method="POST"
+            )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 text = data["content"][0]["text"]
@@ -132,67 +164,162 @@ def get_local_response(user_input):
 
 # ─── Bot body & expressions ─────────────────────────────────────────────────
 
-def make_body(left_eye, right_eye, mouth):
+import math
+
+# ─── Bot body ─────────────────────────────────────────────────────────────
+#
+# Grid (all lines 16 visible chars, inner body = 11):
+#
+#          ┃                 col 10 — antenna stalk
+#       ╭──◆──╮              cols 7-13 (7 wide) — antenna head
+#    ╭──┘     └──╮           cols 5-15 (11+2=13 wide) — head top
+#    │  (●)  (●) │           11 inner — eyes (each eye = 3 chars)
+#    │           │           11 inner — spacer
+#    │   ╰───╯   │           11 inner — mouth (5 chars, centered)
+#    ╰──┬─────┬──╯           cols 5-15 — chin
+#       │ ░◆░ │              cols 8-12 — chest panel
+#       ╰─────╯              cols 8-12 — base
+#        ░░░░░               shadow
+
+def make_body(left_eye, right_eye, mouth, led_color=None, breath_phase=0,
+              left_arm="", right_arm="", panel_char="◆"):
+    """Build the bot. Every eye=3 chars, mouth=5 chars, inner=11."""
+    if led_color is None:
+        led_color = C.LED_IDLE
+    bc = C.BODY_BREATHE[breath_phase % len(C.BODY_BREATHE)]
+    bd = C.BODY_DARK
+
+    #                          inner width = 11
+    #                          ├───────────┤
     return [
-        f"        {C.BODY}╭─────────────╮{RESET}",
-        f"        {C.BODY}│             │{RESET}",
-        f"        {C.BODY}│{RESET}  {left_eye}     {right_eye}  {C.BODY}│{RESET}",
-        f"        {C.BODY}│             │{RESET}",
-        f"        {C.BODY}│{RESET}    {mouth}    {C.BODY}│{RESET}",
-        f"        {C.BODY}│             │{RESET}",
-        f"        {C.BODY}╰──┬─────┬──╯{RESET}",
-        f"        {C.BODY}   │     │{RESET}",
-        f"        {C.BODY_DARK} ──┴─────┴──{RESET}",
-        f"        {C.SHADOW} ╰───────────╯{RESET}",
+        f"         {bd}┃{RESET}",
+        f"      {bc}╭──{led_color}◆{RESET}{bc}──╮{RESET}",
+        f"   {bc}╭──┘     └──╮{RESET}",
+        f"   {bc}│{RESET} {left_eye}   {right_eye} {bc}│{RESET}",
+        f"   {bc}│           │{RESET}",
+        f"   {bc}│{RESET}   {mouth}   {bc}│{RESET}",
+        f"   {bc}╰──┬─────┬──╯{RESET}",
+        f"  {left_arm} {bd}│{C.PANEL} ░{panel_char}░ {bd}│{RESET} {right_arm}",
+        f"      {bd}╰─────╯{RESET}",
+        f"       {C.SHADOW}░░░░░{RESET}",
     ]
 
 
+# ─── Eye definitions ──────────────────────────────────────────────────────
+# EVERY eye is exactly 3 visible chars — no exceptions.
+
 class Eyes:
-    OPEN_L     = f"{C.EYE_WHITE}({C.PUPIL}o{C.EYE_WHITE}){RESET}"
-    OPEN_R     = f"{C.EYE_WHITE}({C.PUPIL}o{C.EYE_WHITE}){RESET}"
-    BLINK      = f"{C.EYE_WHITE}(─){RESET}"
-    LOOK_L_L   = f"{C.EYE_WHITE}({C.PUPIL}o{C.EYE_WHITE} ){RESET}"
-    LOOK_L_R   = f"{C.EYE_WHITE}({C.PUPIL}o{C.EYE_WHITE} ){RESET}"
-    LOOK_R_L   = f"{C.EYE_WHITE}( {C.PUPIL}o{C.EYE_WHITE}){RESET}"
-    LOOK_R_R   = f"{C.EYE_WHITE}( {C.PUPIL}o{C.EYE_WHITE}){RESET}"
-    LOOK_UP_L  = f"{C.EYE_WHITE}({C.PUPIL}°{C.EYE_WHITE}){RESET}"
-    LOOK_UP_R  = f"{C.EYE_WHITE}({C.PUPIL}°{C.EYE_WHITE}){RESET}"
-    HAPPY_L    = f"{C.HAPPY}(^){RESET}"
-    HAPPY_R    = f"{C.HAPPY}(^){RESET}"
+    # Normal — round pupils
+    OPEN_L     = f"{C.EYE_WHITE}({C.PUPIL}●{C.EYE_WHITE}){RESET}"
+    OPEN_R     = f"{C.EYE_WHITE}({C.PUPIL}●{C.EYE_WHITE}){RESET}"
+
+    # Blink — closed
+    BLINK      = f"{C.EYE_WHITE}({C.BODY_DARK}━{C.EYE_WHITE}){RESET}"
+
+    # Half blink — closing
+    HALF_BLINK = f"{C.EYE_WHITE}({C.BODY_DARK}─{C.EYE_WHITE}){RESET}"
+
+    # Look left  — smaller pupil shifted by char choice
+    LOOK_L_L   = f"{C.EYE_WHITE}({C.PUPIL}◖{C.EYE_WHITE}){RESET}"
+    LOOK_L_R   = f"{C.EYE_WHITE}({C.PUPIL}◖{C.EYE_WHITE}){RESET}"
+
+    # Look right
+    LOOK_R_L   = f"{C.EYE_WHITE}({C.PUPIL}◗{C.EYE_WHITE}){RESET}"
+    LOOK_R_R   = f"{C.EYE_WHITE}({C.PUPIL}◗{C.EYE_WHITE}){RESET}"
+
+    # Look up
+    LOOK_UP_L  = f"{C.EYE_WHITE}({C.PUPIL_GLOW}°{C.EYE_WHITE}){RESET}"
+    LOOK_UP_R  = f"{C.EYE_WHITE}({C.PUPIL_GLOW}°{C.EYE_WHITE}){RESET}"
+
+    # Happy — squinting
+    HAPPY_L    = f"{C.HAPPY}({BOLD}^{RESET}{C.HAPPY}){RESET}"
+    HAPPY_R    = f"{C.HAPPY}({BOLD}^{RESET}{C.HAPPY}){RESET}"
+
+    # Hearts
     HEART_L    = f"{C.HEART}(♥){RESET}"
     HEART_R    = f"{C.HEART}(♥){RESET}"
+
+    # Stars
     STAR_L     = f"{C.STAR}(★){RESET}"
     STAR_R     = f"{C.STAR}(★){RESET}"
-    DIZZY_L    = f"{C.PARTY}(@){RESET}"
-    DIZZY_R    = f"{C.PARTY}(@){RESET}"
-    SLEEP_L    = f"{C.ZZZ}(z){RESET}"
-    SLEEP_R    = f"{C.ZZZ}(z){RESET}"
-    COOL_L     = f"{C.COOL}(■){RESET}"
-    COOL_R     = f"{C.COOL}(■){RESET}"
-    WINK_L     = f"{C.EYE_WHITE}(─){RESET}"
-    WINK_R     = f"{C.EYE_WHITE}({C.PUPIL}o{C.EYE_WHITE}){RESET}"
+
+    # Dizzy / party
+    DIZZY_L    = f"{C.PARTY}(◎){RESET}"
+    DIZZY_R    = f"{C.PARTY}(◎){RESET}"
+
+    # Sleep
+    SLEEP_L    = f"{C.ZZZ}(─){RESET}"
+    SLEEP_R    = f"{C.ZZZ}(─){RESET}"
+
+    # Cool / sunglasses
+    COOL_L     = f"{C.COOL}(▪){RESET}"
+    COOL_R     = f"{C.COOL}(▪){RESET}"
+
+    # Wink
+    WINK_L     = f"{C.EYE_WHITE}({C.BODY_DARK}━{C.EYE_WHITE}){RESET}"
+    WINK_R     = f"{C.EYE_WHITE}({C.PUPIL}●{C.EYE_WHITE}){RESET}"
+
+    # Thinking
     THINK_L    = f"{C.THINKING}(·){RESET}"
     THINK_R    = f"{C.THINKING}(·){RESET}"
-    WIDE_L     = f"{C.EYE_WHITE}({C.PUPIL}O{C.EYE_WHITE}){RESET}"
-    WIDE_R     = f"{C.EYE_WHITE}({C.PUPIL}O{C.EYE_WHITE}){RESET}"
+
+    # Wide / surprised
+    WIDE_L     = f"{C.EYE_WHITE}({C.PUPIL}◉{C.EYE_WHITE}){RESET}"
+    WIDE_R     = f"{C.EYE_WHITE}({C.PUPIL}◉{C.EYE_WHITE}){RESET}"
+
+    # Sparkle (celebration)
+    SPARKLE_L  = f"{C.STAR}(✦){RESET}"
+    SPARKLE_R  = f"{C.STAR}(✦){RESET}"
+
+    # Sad
+    SAD_L      = f"{C.ZZZ}(•){RESET}"
+    SAD_R      = f"{C.ZZZ}(•){RESET}"
 
 
 class Mouths:
     SMILE   = f"{C.MOUTH}╰───╯{RESET}"
     GRIN    = f"{C.MOUTH}╰═══╯{RESET}"
-    OPEN    = f"{C.MOUTH}( o ){RESET}"
+    OPEN    = f"{C.MOUTH}( ○ ){RESET}"
     SMALL   = f"{C.MOUTH} ─── {RESET}"
     TALK1   = f"{C.MOUTH}╰─○─╯{RESET}"
-    TALK2   = f"{C.MOUTH}╰─O─╯{RESET}"
-    SLEEP   = f"{C.ZZZ}  ═══ {RESET}"
-    EXCITED = f"{C.HAPPY}╰═●═╯{RESET}"
-    COFFEE  = f"{C.COFFEE}╰─☕─╯{RESET}"
-    THINK   = f"{C.THINKING} ···  {RESET}"
+    TALK2   = f"{C.MOUTH}╰─●─╯{RESET}"
+    SLEEP   = f"{C.ZZZ} ═══ {RESET}"
+    EXCITED = f"{C.HAPPY}╰═★═╯{RESET}"
+    COFFEE  = f"{C.COFFEE}╰ ☕ ╯{RESET}"
+    THINK   = f"{C.THINKING} ··· {RESET}"
+    SAD     = f"{C.ZZZ}╭───╮{RESET}"
+    YAWN    = f"{C.MOUTH}( O ){RESET}"
+    SMIRK   = f"{C.MOUTH} ───╯{RESET}"
+
+
+# ─── Arm animations ──────────────────────────────────────────────────────────
+# Each arm: exactly 4 visible chars (including padding).
+# Left arms go BEFORE the torso │, right arms AFTER.
+
+class Arms:
+    """Arm strings for left and right sides."""
+    REST_L  = f"  {C.BODY_DARK}─╮{RESET}"
+    REST_R  = f"{C.BODY_DARK}╭─{RESET}  "
+    WAVE_L  = [f"  {C.BODY}╱{RESET} ", f"  {C.BODY}─{RESET} ", f"  {C.BODY}╲{RESET} ", f"  {C.BODY}─{RESET} "]
+    WAVE_R  = [f" {C.BODY}╲{RESET}  ", f" {C.BODY}─{RESET}  ", f" {C.BODY}╱{RESET}  ", f" {C.BODY}─{RESET}  "]
+    DANCE_L = [f"  {C.PARTY}╱{RESET} ", f" {C.PARTY}╱{RESET}  ", f"  {C.PARTY}─{RESET} ", f" {C.PARTY}╲{RESET}  "]
+    DANCE_R = [f" {C.PARTY}╲{RESET}  ", f"  {C.PARTY}╲{RESET} ", f" {C.PARTY}─{RESET}  ", f"  {C.PARTY}╱{RESET} "]
+    CHEER_L = f" {C.HAPPY}╱{RESET}  "
+    CHEER_R = f"  {C.HAPPY}╲{RESET} "
+    HUG_L   = f"  {C.HEART}╲{RESET} "
+    HUG_R   = f" {C.HEART}╱{RESET}  "
+    SLEEP_L = f"    "
+    SLEEP_R = f"    "
 
 
 # ─── Speech bubble ───────────────────────────────────────────────────────────
 
-def speech_bubble(text, width=50):
+def speech_bubble(text, width=50, mood_color=None):
+    """Render speech bubble with rounded border and mood-tinted accent."""
+    if mood_color is None:
+        mood_color = C.SPEECH
+    dim = C.SPEECH_DIM
+
     lines = []
     for line in text.split('\n'):
         while len(line) > width - 4:
@@ -207,20 +334,20 @@ def speech_bubble(text, width=50):
     max_len = max(max_len, 10)
 
     result = []
-    result.append(f"  {C.SPEECH}╭{'─' * (max_len + 2)}╮{RESET}")
+    result.append(f"  {mood_color}╭{'─' * (max_len + 2)}╮{RESET}")
     for l in lines:
-        result.append(f"  {C.SPEECH}│{RESET} {l}{' ' * (max_len - len(l))} {C.SPEECH}│{RESET}")
-    result.append(f"  {C.SPEECH}╰{'─' * (max_len + 2)}╯{RESET}")
-    result.append(f"  {C.SPEECH}  ╲{RESET}")
-    result.append(f"  {C.SPEECH}   ╲{RESET}")
+        result.append(f"  {dim}│{RESET} {l}{' ' * (max_len - len(l))} {dim}│{RESET}")
+    result.append(f"  {mood_color}╰{'─' * (max_len + 2)}╯{RESET}")
+    result.append(f"     {dim}╲{RESET}")
+    result.append(f"      {dim}╲{RESET}")
     return result
 
 
 # ─── Sparkle particles ───────────────────────────────────────────────────────
 
-SPARKLE_CHARS = ['✦', '✧', '⋆', '˚', '✩', '·', '⊹', '✶']
+SPARKLE_CHARS = ['✦', '✧', '⋆', '˚', '✩', '·', '⊹', '✶', '◆', '◇', '⊛']
 
-def random_sparkles(count=6):
+def random_sparkles(count=8):
     cols = shutil.get_terminal_size().columns
     result = []
     for _ in range(count):
@@ -229,6 +356,17 @@ def random_sparkles(count=6):
         color = fg(random.randint(150, 255), random.randint(150, 255), random.randint(100, 255))
         result.append((col, f"{color}{char}{RESET}"))
     return result
+
+
+# ─── Idle fidget animations ──────────────────────────────────────────────────
+
+IDLE_FIDGETS = [
+    "curious",   # look left, pause, look right
+    "bounce",    # body shifts up then down
+    "yawn",      # yawn expression
+    "stretch",   # arms go up
+    "nod",       # small nod (body shift)
+]
 
 
 # ─── Bot states ──────────────────────────────────────────────────────────────
@@ -270,10 +408,27 @@ class TerminalBuddy:
         self.sleep_z_count = 0
         self.force_wink = False
 
+        # Animation state
+        self.breath_phase = 0
+        self.next_blink = time.time() + random.uniform(2.0, 5.0)
+        self.blink_stage = 0          # 0=open, 1=half, 2=closed, 3=half, 4=done
+        self.double_blink = False
+        self.fidget_type = None
+        self.fidget_frame = 0
+        self.fidget_timer = 0
+        self.next_fidget = time.time() + random.uniform(8.0, 20.0)
+        self.led_pulse = 0
+
+        # Mood
+        self.mood = Mood()
+
         # Chat input
         self.input_active = False
         self.input_buffer = ""
         self.chat_history = []
+        self.last_user_said = ""       # shown while API is thinking
+        self.question_pool = NonRepeatingPool(BUDDY_QUESTIONS)
+        self.next_question_tick = random.randint(800, 1500)  # ask first question after ~80-150s
 
         # API
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
@@ -299,6 +454,7 @@ class TerminalBuddy:
         self.uptime = UptimeTracker()
         self.git_streak = GitStreakTracker()
         self.clipboard_watcher = ClipboardWatcher()
+        self.commit_watcher = GitCommitWatcher()
 
         # Games
         self.typing_race = TypingRace()
@@ -337,28 +493,42 @@ class TerminalBuddy:
             self.force_wink = False
             return Eyes.WINK_L, Eyes.WINK_R
 
-        if self.blink_timer > 0:
+        # Multi-stage blink animation
+        if self.blink_stage == 1:
+            return Eyes.HALF_BLINK, Eyes.HALF_BLINK
+        if self.blink_stage in (2, 3):
             return Eyes.BLINK, Eyes.BLINK
+        if self.blink_stage == 4:
+            return Eyes.HALF_BLINK, Eyes.HALF_BLINK
+
+        # Fidget overrides
+        if self.fidget_type == "yawn" and self.fidget_frame in (2, 3, 4):
+            return Eyes.BLINK, Eyes.BLINK
+        if self.fidget_type == "curious":
+            if self.fidget_frame < 3:
+                return Eyes.LOOK_L_L, Eyes.LOOK_L_R
+            elif self.fidget_frame < 6:
+                return Eyes.LOOK_R_L, Eyes.LOOK_R_R
 
         s = self.state
         if s == BotState.SLEEPING:
             return Eyes.SLEEP_L, Eyes.SLEEP_R
         elif s == BotState.CELEBRATING:
-            return [(Eyes.STAR_L, Eyes.STAR_R), (Eyes.HEART_L, Eyes.HEART_R),
-                    (Eyes.HAPPY_L, Eyes.HAPPY_R)][self.tick % 3]
+            return [(Eyes.STAR_L, Eyes.STAR_R), (Eyes.SPARKLE_L, Eyes.SPARKLE_R),
+                    (Eyes.HEART_L, Eyes.HEART_R), (Eyes.HAPPY_L, Eyes.HAPPY_R)][self.tick % 4]
         elif s == BotState.COFFEE:
-            return Eyes.OPEN_L, Eyes.OPEN_R
+            return Eyes.HAPPY_L, Eyes.HAPPY_R
         elif s == BotState.DANCING:
             return [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.STAR_L, Eyes.STAR_R),
-                    (Eyes.DIZZY_L, Eyes.DIZZY_R), (Eyes.HAPPY_L, Eyes.HAPPY_R)][self.dance_frame % 4]
+                    (Eyes.DIZZY_L, Eyes.DIZZY_R), (Eyes.SPARKLE_L, Eyes.SPARKLE_R)][self.dance_frame % 4]
         elif s == BotState.PROCESSING:
             return [(Eyes.THINK_L, Eyes.THINK_R), (Eyes.LOOK_UP_L, Eyes.LOOK_UP_R),
                     (Eyes.THINK_L, Eyes.THINK_R), (Eyes.LOOK_R_L, Eyes.LOOK_R_R)][self.tick % 4]
         elif s == BotState.BUILDING:
             return [(Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.LOOK_UP_L, Eyes.LOOK_UP_R),
-                    (Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.LOOK_R_L, Eyes.LOOK_R_R)][self.tick % 4]
+                    (Eyes.OPEN_L, Eyes.OPEN_R), (Eyes.LOOK_R_L, Eyes.LOOK_R_R)][self.tick % 4]
         elif s == BotState.RACING:
-            return Eyes.OPEN_L, Eyes.OPEN_R
+            return Eyes.WIDE_L, Eyes.WIDE_R
         elif s == BotState.TRIVIA:
             return Eyes.THINK_L, Eyes.THINK_R
         elif s == BotState.POMODORO_WORK:
@@ -366,10 +536,10 @@ class TerminalBuddy:
         elif s == BotState.POMODORO_BREAK:
             return Eyes.HAPPY_L, Eyes.HAPPY_R
         elif s == BotState.TALKING:
-            phase = self.tick % 8
-            if phase < 2: return Eyes.OPEN_L, Eyes.OPEN_R
-            elif phase < 4: return Eyes.LOOK_L_L, Eyes.LOOK_L_R
-            elif phase < 6: return Eyes.OPEN_L, Eyes.OPEN_R
+            phase = self.tick % 10
+            if phase < 3: return Eyes.OPEN_L, Eyes.OPEN_R
+            elif phase < 5: return Eyes.LOOK_L_L, Eyes.LOOK_L_R
+            elif phase < 7: return Eyes.OPEN_L, Eyes.OPEN_R
             else: return Eyes.LOOK_R_L, Eyes.LOOK_R_R
         elif s == BotState.THINKING:
             return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R
@@ -378,20 +548,31 @@ class TerminalBuddy:
         elif s == BotState.GREETING:
             return Eyes.HAPPY_L, Eyes.HAPPY_R
         else:
-            phase = self.eye_phase % 12
-            if phase < 4: return Eyes.OPEN_L, Eyes.OPEN_R
-            elif phase < 6: return Eyes.LOOK_L_L, Eyes.LOOK_L_R
-            elif phase < 8: return Eyes.OPEN_L, Eyes.OPEN_R
-            elif phase < 10: return Eyes.LOOK_R_L, Eyes.LOOK_R_R
-            else: return Eyes.OPEN_L, Eyes.OPEN_R
+            # Mood-influenced idle eyes
+            mood_face = self.mood.face
+            if mood_face in ("sad", "lonely"):
+                return Eyes.SAD_L, Eyes.SAD_R
+            if mood_face == "ecstatic":
+                return Eyes.HAPPY_L, Eyes.HAPPY_R
+            phase = self.eye_phase % 16
+            if phase < 5: return Eyes.OPEN_L, Eyes.OPEN_R
+            elif phase < 7: return Eyes.LOOK_L_L, Eyes.LOOK_L_R
+            elif phase < 10: return Eyes.OPEN_L, Eyes.OPEN_R
+            elif phase < 12: return Eyes.LOOK_R_L, Eyes.LOOK_R_R
+            elif phase < 14: return Eyes.OPEN_L, Eyes.OPEN_R
+            else: return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R
 
     def get_mouth(self):
+        # Fidget overrides
+        if self.fidget_type == "yawn" and self.fidget_frame in (2, 3, 4):
+            return Mouths.YAWN
+
         s = self.state
         if s == BotState.SLEEPING: return Mouths.SLEEP
-        elif s == BotState.CELEBRATING: return [Mouths.GRIN, Mouths.EXCITED][self.tick % 2]
+        elif s == BotState.CELEBRATING: return [Mouths.GRIN, Mouths.EXCITED, Mouths.GRIN][self.tick % 3]
         elif s == BotState.COFFEE: return Mouths.COFFEE
         elif s == BotState.DANCING: return [Mouths.GRIN, Mouths.EXCITED, Mouths.GRIN, Mouths.OPEN][self.dance_frame % 4]
-        elif s == BotState.TALKING: return [Mouths.TALK1, Mouths.TALK2][self.tick % 2]
+        elif s == BotState.TALKING: return [Mouths.TALK1, Mouths.TALK2, Mouths.TALK1, Mouths.SMALL][self.tick % 4]
         elif s == BotState.PROCESSING: return [Mouths.THINK, Mouths.SMALL][self.tick % 2]
         elif s == BotState.BUILDING: return [Mouths.SMALL, Mouths.OPEN][self.tick % 2]
         elif s == BotState.THINKING: return Mouths.SMALL
@@ -399,12 +580,66 @@ class TerminalBuddy:
         elif s in (BotState.RACING, BotState.TRIVIA): return Mouths.SMALL
         elif s == BotState.POMODORO_WORK: return Mouths.SMALL
         elif s == BotState.POMODORO_BREAK: return Mouths.SMILE
-        else: return Mouths.SMILE
+        else:
+            mood_face = self.mood.face
+            if mood_face in ("sad", "lonely"): return Mouths.SAD
+            if mood_face == "ecstatic": return Mouths.GRIN
+            if mood_face == "meh": return Mouths.SMALL
+            return Mouths.SMILE
 
     def get_dance_offset(self):
         if self.state != BotState.DANCING:
+            if self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
+                return 0  # bounce handled via row offset
             return 0
         return [0, 2, 4, 2, 0, -2, -4, -2][self.dance_frame % 8]
+
+    def get_led_color(self):
+        """Antenna LED color based on state and mood."""
+        s = self.state
+        pulse = (math.sin(self.led_pulse * 0.3) + 1) / 2  # 0..1 pulse
+        if s == BotState.CELEBRATING: return [C.LED_HAPPY, C.LED_LOVE, C.LED_PARTY][self.tick % 3]
+        if s == BotState.SLEEPING: return C.LED_SLEEP if pulse > 0.5 else C.SHADOW
+        if s == BotState.DANCING: return [C.LED_PARTY, C.LED_HAPPY, C.LED_LOVE, C.LED_PARTY][self.dance_frame % 4]
+        if s == BotState.PROCESSING: return C.LED_THINK if pulse > 0.3 else C.LED_ALERT
+        if s == BotState.BUILDING: return C.LED_ALERT if pulse > 0.5 else C.SHADOW
+        if s == BotState.COFFEE: return C.COFFEE
+        if s == BotState.GREETING: return C.LED_HAPPY
+        if s in (BotState.TALKING, BotState.CHATTING): return C.LED_TALK
+        # Idle — based on mood
+        mood_face = self.mood.face
+        if mood_face == "ecstatic": return C.LED_HAPPY
+        if mood_face == "happy": return C.LED_IDLE
+        if mood_face in ("sad", "lonely"): return C.LED_SLEEP
+        return C.LED_IDLE if pulse > 0.3 else C.BODY_DARK
+
+    def get_arms(self):
+        """Get current arm strings based on state."""
+        s = self.state
+        if s == BotState.DANCING:
+            f = self.dance_frame % 4
+            return Arms.DANCE_L[f], Arms.DANCE_R[f]
+        if s == BotState.CELEBRATING:
+            return Arms.CHEER_L, Arms.CHEER_R
+        if s == BotState.SLEEPING:
+            return Arms.SLEEP_L, Arms.SLEEP_R
+        if s == BotState.GREETING:
+            f = self.tick % 4
+            return Arms.WAVE_L[f], Arms.REST_R
+        if self.fidget_type == "stretch" and self.fidget_frame in (2, 3, 4):
+            return Arms.CHEER_L, Arms.CHEER_R
+        return Arms.REST_L, Arms.REST_R
+
+    def get_panel_char(self):
+        """Chest panel indicator glyph."""
+        s = self.state
+        if s == BotState.CELEBRATING: return ["★", "◆", "★"][self.tick % 3]
+        if s == BotState.DANCING: return ["◆", "◇", "◆", "◇"][self.dance_frame % 4]
+        if s == BotState.SLEEPING: return "·"
+        if s == BotState.PROCESSING: return ["◇", "◆", "◇", "◆"][self.tick % 4]
+        if s == BotState.BUILDING: return ["▪", "▫", "▪", "▫"][self.tick % 4]
+        if s == BotState.COFFEE: return "☕"
+        return "◆"
 
     # ─── Rendering ───────────────────────────────────────────────────────
 
@@ -414,9 +649,9 @@ class TerminalBuddy:
         out.append(HIDE_CURSOR)
         out.append(move(1, 1))
 
-        for i in range(1, self.rows - 1):
+        for i in range(1, self.rows + 1):
             out.append(move(i, 1))
-            out.append(" " * self.cols)
+            out.append(ERASE_LINE)
 
         # Help overlay
         if self.help_visible:
@@ -425,32 +660,44 @@ class TerminalBuddy:
             sys.stdout.flush()
             return
 
-        # Title bar
-        api_tag = " (AI)" if self.has_api else ""
-        title = f" {C.ACCENT}╔══ {BOLD}TERMINAL BUDDY{api_tag}{RESET}{C.ACCENT} ══╗{RESET}"
-        out.append(move(1, max(1, (self.cols - 28) // 2)))
+        # ─── Title bar (gradient line) ──────────────────────
+        title_text = "TERMINAL BUDDY"
+        api_tag = f" {C.GREEN}● AI{RESET}" if self.has_api else ""
+        mood_text = self.mood.get_status_text()
+        # Build gradient title
+        grad_left = f"{C.BODY_DARK}{'━' * 3}{RESET}"
+        grad_right = f"{C.BODY_DARK}{'━' * 3}{RESET}"
+        title = f"  {grad_left} {C.ACCENT}{BOLD}{title_text}{RESET}{api_tag} {grad_right}  {DIM}{mood_text}{RESET}"
+        out.append(move(1, 2))
         out.append(title)
 
-        # Sparkles
-        if self.state == BotState.CELEBRATING:
-            for col, spark in random_sparkles(8):
-                row = random.randint(2, min(5, self.rows - 1))
+        # ─── Quick-access hint bar ──────────────────────────
+        if self.tick < 60 or self.state == BotState.GREETING:
+            hint_row = 2
+            out.append(move(hint_row, 3))
+            out.append(f"{DIM}╰ [t]alk [m]otivate [j]oke [d]ance [/]help{RESET}")
+
+        # ─── Sparkles ──────────────────────────────────────
+        if self.state in (BotState.CELEBRATING, BotState.DANCING):
+            for col, spark in random_sparkles(10):
+                row = random.randint(2, min(8, self.rows - 4))
                 out.append(move(row, col))
                 out.append(spark)
 
-        # Speech bubble
-        bubble_start = 3
+        # ─── Speech bubble ─────────────────────────────────
+        bubble_start = 4
         if self.message:
-            bubble = speech_bubble(self.message)
+            mood_color = self._get_mood_bubble_color()
+            bubble = speech_bubble(self.message, mood_color=mood_color)
             for i, line in enumerate(bubble):
                 if bubble_start + i < self.rows - 14:
                     out.append(move(bubble_start + i, 4))
                     out.append(line)
             body_start = bubble_start + len(bubble)
         else:
-            body_start = bubble_start + 2
+            body_start = bubble_start + 1
 
-        # Sixel image
+        # ─── Sixel image ──────────────────────────────────
         if self.sixel_mode and self.image_protocol:
             img = get_bot_image(self.image_protocol)
             if img:
@@ -458,150 +705,187 @@ class TerminalBuddy:
                 out.append(img)
                 body_start += 12
 
-        # Bot body
+        # ─── Bot body ─────────────────────────────────────
         left_eye, right_eye = self.get_eyes()
         mouth = self.get_mouth()
-        body = make_body(left_eye, right_eye, mouth)
+        left_arm, right_arm = self.get_arms()
+        led = self.get_led_color()
+        panel = self.get_panel_char()
+        body = make_body(left_eye, right_eye, mouth, led_color=led,
+                         breath_phase=self.breath_phase,
+                         left_arm=left_arm, right_arm=right_arm,
+                         panel_char=panel)
         dance_offset = self.get_dance_offset()
+        # Bounce fidget: shift body up by 1
+        bounce_offset = -1 if (self.fidget_type == "bounce" and self.fidget_frame in (1, 2)) else 0
 
         for i, line in enumerate(body):
-            row = body_start + i
-            if row < self.rows - 3:
+            row = body_start + i + bounce_offset
+            if 1 < row < self.rows - 3:
                 out.append(move(row, 2 + dance_offset))
                 out.append(line)
 
-        # Dance arms
-        arm_row = body_start + 3
-        if self.state == BotState.DANCING and arm_row < self.rows - 3:
-            arms = [
-                (f"  {C.BODY}╱{RESET}", f"{C.BODY}╲{RESET}  "),
-                (f"  {C.BODY}─{RESET}", f"{C.BODY}─{RESET}  "),
-                (f"  {C.BODY}╲{RESET}", f"{C.BODY}╱{RESET}  "),
-                (f"  {C.BODY}─{RESET}", f"{C.BODY}─{RESET}  "),
-            ]
-            la, ra = arms[self.dance_frame % 4]
-            out.append(move(arm_row, 4 + dance_offset))
-            out.append(la)
-            out.append(move(arm_row, 24 + dance_offset))
-            out.append(ra)
-
-        # Sleeping ZZZs
+        # ─── Sleeping ZZZs (floating upward) ──────────────
         if self.state == BotState.SLEEPING:
-            for i in range(min(3, self.sleep_z_count)):
-                zr = body_start - 1 - i
+            z_chars = ['z', 'z', 'Z', 'Z', 'Z']
+            for i in range(min(4, self.sleep_z_count)):
+                zr = body_start - 1 - i + bounce_offset
                 if 1 < zr < self.rows:
-                    out.append(move(zr, 26 + i * 3))
-                    out.append(f"{C.ZZZ}{['z', 'Z', 'Z'][i]}{RESET}")
+                    # Float and fade
+                    brightness = max(80, 200 - i * 40)
+                    zc = fg(brightness, brightness, min(255, brightness + 55))
+                    out.append(move(zr, 28 + i * 2))
+                    out.append(f"{zc}{z_chars[i]}{RESET}")
 
-        # Processing indicator
+        # ─── Processing indicator ─────────────────────────
         if self.state == BotState.PROCESSING:
-            dots = "." * ((self.tick % 3) + 1)
+            # Animated dots with color
+            n_dots = (self.tick % 4)
+            dots_str = f"{C.THINKING}{'●' * n_dots}{'○' * (3 - n_dots)}{RESET}"
             ind_row = body_start + len(body) + 1
             if ind_row < self.rows - 3:
-                out.append(move(ind_row, 12))
-                out.append(f"{C.THINKING}Thinking{dots}{RESET}")
+                out.append(move(ind_row, 10))
+                out.append(f"{C.THINKING}  thinking {dots_str}{RESET}")
 
-        # Building indicator
+        # ─── Building indicator ───────────────────────────
         if self.state == BotState.BUILDING:
-            spinner = ['|', '/', '-', '\\'][self.tick % 4]
+            spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+            spinner = spinner_chars[self.tick % len(spinner_chars)]
             ind_row = body_start + len(body) + 1
             if ind_row < self.rows - 3:
-                out.append(move(ind_row, 12))
-                out.append(f"{C.YELLOW}Building {spinner}{RESET}")
+                out.append(move(ind_row, 10))
+                out.append(f"{C.YELLOW}  {spinner} building...{RESET}")
 
-        # ─── Bottom bars ─────────────────────────────────────────
+        # ─── Bottom bars ─────────────────────────────────
 
         input_row = self.rows - 1
         status_row = self.rows
 
         if self.input_active:
-            visible_w = self.cols - 5
+            visible_w = self.cols - 6
             display_text = self.input_buffer
             if len(display_text) > visible_w:
                 display_text = display_text[-visible_w:]
+            cursor_char = "█" if self.tick % 6 < 3 else "▎"
             out.append(move(input_row, 1))
-            out.append(f"{C.INPUT_BG} {C.INPUT}>{RESET} {C.INPUT}{display_text}{C.ACCENT}█{RESET}{' ' * max(0, self.cols - len(display_text) - 5)}{RESET}")
+            out.append(f"{ERASE_LINE}{C.INPUT_BG} {C.ACCENT}❯{RESET} {C.INPUT}{display_text}{C.ACCENT}{cursor_char}{RESET}")
             out.append(move(status_row, 1))
-            out.append(f"{bg(30, 30, 50)} {DIM}Enter: send  |  Esc: cancel{' ' * self.cols}{RESET}")
+            out.append(f"{ERASE_LINE}{bg(25, 28, 45)} {DIM}Enter: send  │  Esc: cancel{RESET}")
 
         elif self.state == BotState.RACING:
             display_text = self.typing_race.user_input
             if len(display_text) > self.cols - 5:
                 display_text = display_text[-(self.cols - 5):]
             out.append(move(input_row, 1))
-            out.append(f"{C.INPUT_BG} {C.GREEN}>{RESET} {C.INPUT}{display_text}{C.ACCENT}█{RESET}{' ' * max(0, self.cols - len(display_text) - 5)}{RESET}")
+            out.append(f"{ERASE_LINE}{C.INPUT_BG} {C.GREEN}❯{RESET} {C.INPUT}{display_text}{C.ACCENT}█{RESET}")
             out.append(move(status_row, 1))
-            out.append(f"{bg(30, 30, 50)} {DIM}Type it! Enter: submit | Esc: cancel{' ' * self.cols}{RESET}")
+            out.append(f"{ERASE_LINE}{bg(25, 28, 45)} {DIM}Type it! Enter: submit │ Esc: cancel{RESET}")
 
         elif self.state == BotState.TRIVIA:
             out.append(move(input_row, 1))
-            out.append(f"{bg(30, 30, 50)} {C.CYAN}Press a, b, c, or d  |  Esc: skip{' ' * self.cols}{RESET}")
+            out.append(f"{ERASE_LINE}{bg(25, 28, 45)} {C.CYAN}Press a, b, c, or d  │  Esc: skip{RESET}")
             out.append(move(status_row, 1))
             out.append(self._make_info_bar())
 
         else:
             out.append(move(input_row, 1))
             if self.state in (BotState.POMODORO_WORK, BotState.POMODORO_BREAK):
-                phase = "WORK" if self.state == BotState.POMODORO_WORK else "BREAK"
+                phase_name = "WORK" if self.state == BotState.POMODORO_WORK else "BREAK"
                 remaining = self.pomodoro.remaining()
-                controls = f" {C.FIRE}Pomodoro {phase}: {remaining}{RESET}  {DIM}[o]cancel [t]alk [q]uit{RESET}"
+                spinner_chars = ['◴', '◷', '◶', '◵']
+                sp = spinner_chars[self.tick % 4]
+                controls = f" {C.FIRE}{sp} Pomodoro {phase_name}: {remaining}{RESET}  {DIM}[o]cancel [t]alk [q]uit{RESET}"
             else:
                 controls = f" {DIM}[t]alk [m]otivate [j]oke [d]ance [g]roast [k]ommit [w]race [?]trivia [/]help [q]uit{RESET}"
-            out.append(f"{bg(30, 30, 50)}{controls}{' ' * self.cols}{RESET}")
+            out.append(f"{ERASE_LINE}{bg(25, 28, 45)}{controls}{RESET}")
             out.append(move(status_row, 1))
             out.append(self._make_info_bar())
 
         sys.stdout.write("".join(out))
         sys.stdout.flush()
 
+    def _get_mood_bubble_color(self):
+        """Speech bubble border color based on state."""
+        s = self.state
+        if s == BotState.CELEBRATING: return C.HAPPY
+        if s == BotState.DANCING: return C.PARTY
+        if s == BotState.SLEEPING: return C.ZZZ
+        if s == BotState.COFFEE: return C.COFFEE
+        if s == BotState.PROCESSING: return C.THINKING
+        if s == BotState.BUILDING: return C.YELLOW
+        return C.SPEECH
+
     def _make_info_bar(self):
-        api_status = f"{C.GREEN}AI{RESET}" if self.has_api else f"{DIM}AI off{RESET}"
+        api_status = f"{C.GREEN}●{RESET}" if self.has_api else f"{C.RED}○{RESET}"
         uptime_str = self.uptime.formatted()
         streak = self.git_streak.get_display()
         weather_str = ""
         if self.weather.current:
             w = self.weather.current
-            weather_str = f"  {DIM}{w['condition']} {w['temp_c']}C{RESET}"
+            weather_str = f" {DIM}│{RESET} {DIM}{w['condition']} {w['temp_c']}°C{RESET}"
         ach_summary = self.achievements.get_summary()
         pomo_str = ""
         if self.pomodoro.active:
-            pomo_str = f"  {C.FIRE}pomo:{self.pomodoro.remaining()}{RESET}"
-        return f"{bg(25, 25, 40)} {api_status}  {DIM}Up:{RESET}{uptime_str}  {DIM}{streak}{RESET}{weather_str}{pomo_str}  {DIM}Ach:{RESET}{ach_summary}{' ' * self.cols}{RESET}"
+            pomo_str = f" {DIM}│{RESET} {C.FIRE}◴ {self.pomodoro.remaining()}{RESET}"
+
+        # Mood mini-bar
+        mood_bar = self.mood.get_bar()
+        ml = self.mood.level
+        mood_color = [C.MOOD_SAD, C.MOOD_MEH, C.MOOD_OK, C.MOOD_GOOD, C.MOOD_GREAT][ml]
+
+        return (f"{ERASE_LINE}{bg(20, 22, 35)} {api_status} AI"
+                f" {DIM}│{RESET} {DIM}⏱{RESET} {uptime_str}"
+                f" {DIM}│{RESET} {DIM}{streak}{RESET}"
+                f"{weather_str}{pomo_str}"
+                f" {DIM}│{RESET} {mood_color}{mood_bar}{RESET}"
+                f" {DIM}│{RESET} {DIM}🏆{RESET}{ach_summary}"
+                f"{RESET}")
 
     def _render_help(self, out):
-        help_lines = [
-            f"{BOLD}{C.ACCENT}TERMINAL BUDDY - CONTROLS{RESET}",
-            "",
-            f"{C.GREEN}Chat & Core:{RESET}",
-            f"  [t] / Enter  Chat with buddy    [q]  Quit",
-            f"  [r]          Random reaction     [/]  This help",
-            "",
-            f"{C.GREEN}Motivation:{RESET}",
-            f"  [m]  Motivational quote          [j]  Programming joke",
-            f"  [d]  Dance!                      [p]  Party mode",
-            f"  [c]  Coffee break                [s]  Sleep mode",
-            "",
-            f"{C.GREEN}AI Features:{RESET}",
-            f"  [g]  Roast my code (git diff)    [k]  Commit message poet",
-            "",
-            f"{C.GREEN}Games:{RESET}",
-            f"  [w]  Typing race                 [?]  Trivia question",
-            f"  [o]  Pomodoro timer              [a]  Achievements",
-            "",
-            f"{C.GREEN}Productivity:{RESET}",
-            f"  [f]  Find TODOs in project       [i]  Check open PRs",
-            f"  [b]  Run build                   [u]  Uptime & git streak",
-            f"  [x]  Weather check               [6]  Toggle pixel art",
-            "",
-            f"{DIM}Press any key to close{RESET}",
+        # Beautiful help overlay with sections and gradients
+        box_w = min(60, self.cols - 6)
+
+        def hline(char='─'):
+            return char * (box_w - 2)
+
+        lines = [
+            (f"{C.ACCENT}╭{hline()}╮{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {BOLD}{C.WHITE}TERMINAL BUDDY — CONTROLS{RESET}{' ' * (box_w - 28)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}├{hline()}┤{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {C.GREEN}◆ Chat & Core{RESET}{' ' * (box_w - 16)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[t] / Enter  Chat{' ' * (box_w - 22)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[r]  Random reaction     [/]  This help{' ' * (box_w - 43)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[q]  Quit{' ' * (box_w - 13)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {C.CYAN}◆ Vibes{RESET}{' ' * (box_w - 10)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[m]  Motivate   [j]  Joke   [d]  Dance{' ' * (box_w - 43)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[p]  Party      [c]  Coffee [s]  Sleep{' ' * (box_w - 43)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {C.MAGENTA}◆ AI Features{RESET}{' ' * (box_w - 16)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[g]  Roast my code        [k]  Commit poet{' ' * (box_w - 47)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {C.YELLOW}◆ Games{RESET}{' ' * (box_w - 10)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[w]  Typing race  [?]  Trivia  [o]  Pomodoro{' ' * (box_w - 50)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[a]  Achievements{' ' * (box_w - 21)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET} {C.ORANGE}◆ Productivity{RESET}{' ' * (box_w - 17)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[f]  Find TODOs   [i]  Check PRs{' ' * (box_w - 37)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[b]  Run build    [u]  Stats   [x]  Weather{' ' * (box_w - 49)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}   {DIM}[6]  Toggle pixel art{' ' * (box_w - 23)}{RESET}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}│{RESET}{' ' * (box_w - 2)}{C.ACCENT}│{RESET}", False),
+            (f"{C.ACCENT}╰{hline()}╯{RESET}", False),
+            ("", False),
+            (f"  {DIM}Press any key to close{RESET}", False),
         ]
-        for i, line in enumerate(help_lines):
-            row = 3 + i
+        start_col = max(3, (self.cols - box_w) // 2)
+        for i, (line, _) in enumerate(lines):
+            row = 2 + i
             if row < self.rows - 2:
-                out.append(move(row, 4))
+                out.append(move(row, start_col))
                 out.append(line)
         out.append(move(self.rows, 1))
-        out.append(f"{bg(30, 30, 50)} {DIM}Press any key to return{' ' * self.cols}{RESET}")
+        out.append(f"{ERASE_LINE}{bg(20, 22, 35)} {DIM}Press any key to return{RESET}")
 
     # ─── Message & background helpers ────────────────────────────────
 
@@ -617,8 +901,21 @@ class TerminalBuddy:
 
     def _bg_chat_call(self, user_message):
         def _call():
-            text = self.ai_client.send_message(user_message) if self.has_api else None
+            try:
+                text = self.ai_client.send_message(user_message) if self.has_api else None
+            except Exception:
+                text = None
             self.result_queue.put(("chat_response", text))
+        threading.Thread(target=_call, daemon=True).start()
+
+    def _bg_proactive_call(self, prompt):
+        """Background API call for proactive buddy messages (adds to history)."""
+        def _call():
+            try:
+                text = self.ai_client.send_proactive(prompt) if self.has_api else None
+            except Exception:
+                text = None
+            self.result_queue.put(("idle_response", text))
         threading.Thread(target=_call, daemon=True).start()
 
     def _bg_task(self, func, result_type):
@@ -634,6 +931,7 @@ class TerminalBuddy:
 
     def trigger_motivate(self):
         self.achievements.increment("motivate_count")
+        self.mood.on_interaction()
         if self.has_api:
             self.state = BotState.PROCESSING
             self.set_message("Generating a fresh quote...", 999)
@@ -644,6 +942,7 @@ class TerminalBuddy:
 
     def trigger_joke(self):
         self.achievements.increment("joke_count")
+        self.mood.on_interaction()
         if self.has_api:
             self.state = BotState.PROCESSING
             self.set_message("Cooking up a fresh joke...", 999)
@@ -656,11 +955,13 @@ class TerminalBuddy:
         self.state = BotState.DANCING
         self.dance_frame = 0
         self.achievements.unlock("first_dance")
+        self.mood.on_play()
         self.set_message(random.choice(["Watch my moves!", "Dance break!", "Dropping beats, not bugs!", "Every commit deserves a dance!"]), 50)
 
     def trigger_coffee(self):
         self.state = BotState.COFFEE
         self.achievements.unlock("first_coffee")
+        self.mood.on_rest()
         self.set_message(random.choice(["Ahh, liquid productivity!", "brew install --motivation", "Espresso yourself!", "sudo make me coffee"]), 45)
 
     def trigger_sleep(self):
@@ -672,6 +973,7 @@ class TerminalBuddy:
         self.state = BotState.CELEBRATING
         self.celebration_ticks = 0
         self.achievements.increment("party_count")
+        self.mood.on_play()
         self.set_message(random.choice(["PARTY MODE ENGAGED!", "WE SHIP, WE CELEBRATE!", "ALL TESTS PASSING ENERGY!", "DEPLOYMENT SUCCESSFUL VIBES!"]), 55)
 
     def trigger_roast(self):
@@ -793,10 +1095,13 @@ class TerminalBuddy:
             self.state = BotState.IDLE
             return
         self.achievements.increment("chat_count")
+        self.mood.on_chat()
         self.chat_history.append(("user", text))
+        self.last_user_said = text
         if self.has_api:
             self.state = BotState.PROCESSING
-            self.set_message(f"You: {text}", 999)
+            short = text[:38] + ("..." if len(text) > 38 else "")
+            self.set_message(f"You: {short}\n\n...", 999)
             self._bg_chat_call(text)
         else:
             response = get_local_response(text)
@@ -807,16 +1112,59 @@ class TerminalBuddy:
 
     def update(self):
         self.tick += 1
+        now = time.time()
 
-        if self.blink_timer > 0:
-            self.blink_timer -= 1
-        elif random.random() < 0.03 and self.state not in (BotState.PROCESSING, BotState.BUILDING):
-            self.blink_timer = 2
+        # ─── Breathing animation (slow sine wave on body color) ───
+        if self.tick % 3 == 0:
+            self.breath_phase = (self.breath_phase + 1) % len(C.BODY_BREATHE)
 
-        if self.tick % 6 == 0:
+        # ─── LED pulse ────────────────────────────────────────────
+        self.led_pulse += 1
+
+        # ─── Irregular blinking with multi-stage animation ────────
+        if self.blink_stage > 0:
+            self.blink_stage += 1
+            if self.blink_stage > 5:
+                self.blink_stage = 0
+                # Double-blink: ~15% chance
+                if self.double_blink:
+                    self.double_blink = False
+                elif random.random() < 0.15:
+                    self.double_blink = True
+                    self.blink_stage = 1
+                    self.next_blink = now + random.uniform(2.0, 6.0)
+                else:
+                    self.next_blink = now + random.uniform(2.0, 6.0)
+        elif now >= self.next_blink and self.state not in (
+            BotState.PROCESSING, BotState.BUILDING, BotState.SLEEPING
+        ):
+            self.blink_stage = 1
+
+        # ─── Eye wander ──────────────────────────────────────────
+        if self.tick % 8 == 0:
             self.eye_phase += 1
 
-        # Drain result queue
+        # ─── Idle fidgets ─────────────────────────────────────────
+        if self.fidget_type:
+            self.fidget_timer += 1
+            if self.fidget_timer % 3 == 0:
+                self.fidget_frame += 1
+            if self.fidget_frame > 7:
+                self.fidget_type = None
+                self.fidget_frame = 0
+                self.fidget_timer = 0
+                self.next_fidget = now + random.uniform(10.0, 25.0)
+        elif self.state == BotState.IDLE and now >= self.next_fidget:
+            self.fidget_type = random.choice(IDLE_FIDGETS)
+            self.fidget_frame = 0
+            self.fidget_timer = 0
+
+        # ─── Mood tick ────────────────────────────────────────────
+        self.mood.tick(0.1)
+        if self.tick % 300 == 0:
+            self.mood.save()
+
+        # ─── Drain result queue ──────────────────────────────────
         while not self.result_queue.empty():
             try:
                 rtype, data = self.result_queue.get_nowait()
@@ -824,7 +1172,7 @@ class TerminalBuddy:
             except queue.Empty:
                 break
 
-        # Message timer
+        # ─── Message timer ───────────────────────────────────────
         if self.message_timer > 0 and self.state not in (
             BotState.PROCESSING, BotState.BUILDING, BotState.RACING,
             BotState.TRIVIA, BotState.POMODORO_WORK, BotState.POMODORO_BREAK
@@ -835,7 +1183,7 @@ class TerminalBuddy:
                 if self.state in (BotState.TALKING, BotState.GREETING):
                     self.state = BotState.IDLE
 
-        # State updates
+        # ─── State updates ───────────────────────────────────────
         if self.state == BotState.DANCING:
             if self.tick % 2 == 0:
                 self.dance_frame += 1
@@ -846,26 +1194,73 @@ class TerminalBuddy:
             if not self.message:
                 self.state = BotState.IDLE
         elif self.state == BotState.SLEEPING:
-            if self.tick % 8 == 0:
-                self.sleep_z_count = min(3, self.sleep_z_count + 1)
+            if self.tick % 6 == 0:
+                self.sleep_z_count = min(4, self.sleep_z_count + 1)
             if not self.message:
                 self.state = BotState.IDLE
+                self.mood.on_rest()
                 self.set_message("*yawn* Back to it!", 25)
         elif self.state == BotState.COFFEE:
             if not self.message:
                 self.state = BotState.IDLE
+                self.mood.on_rest()
                 self.set_message("Recharged! Let's code!", 25)
         elif self.state == BotState.IDLE:
             self.idle_timer += 1
-            if self.idle_timer > 120 and random.random() < 0.01:
+            # ─── Proactive buddy message (every ~80-150s) ────────
+            if self.tick >= self.next_question_tick:
+                self.next_question_tick = self.tick + random.randint(800, 1500)
                 self.idle_timer = 0
                 if self.has_api:
-                    self._bg_api_call("Say something random and funny to an idle programmer. Fun fact, stretch reminder, or quirky observation.", "idle_response")
+                    ctx = ""
+                    if self.last_user_said:
+                        ctx = f" Earlier the human mentioned: \"{self.last_user_said[:80]}\". Build on that if relevant."
+                    # Alternate between sharing something and asking something
+                    mode = random.choice([
+                        "ask",    # curious question
+                        "ask",    # weighted slightly toward asking
+                        "share",  # share an opinion / observation about yourself or coding
+                        "nudge",  # check in / gentle nudge
+                    ])
+                    if mode == "ask":
+                        prompt = (
+                            f"You're Buddy, a terminal bot who genuinely cares about this programmer. "
+                            f"Ask them ONE curious, warm question — about their project, their day, something they're learning, or how they're holding up. "
+                            f"Sound like a friend, not a chatbot. 1-2 sentences max.{ctx}"
+                        )
+                    elif mode == "share":
+                        prompt = (
+                            f"You're Buddy, a terminal bot with real opinions. Share something about yourself unprompted — "
+                            f"a hot take about programming, something you've 'noticed' from watching them code, a weird thought you just had, "
+                            f"or a confession about your robot life. Keep it fun and 1-2 sentences. No question needed.{ctx}"
+                        )
+                    else:  # nudge
+                        prompt = (
+                            f"You're Buddy, checking in on your programmer friend who's been quietly working. "
+                            f"Say something warm and brief — notice their effort, offer encouragement, or just remind them you're here. "
+                            f"1-2 sentences, feels genuine not cheesy.{ctx}"
+                        )
+                    self._bg_proactive_call(prompt)
+                else:
+                    q = self.question_pool.pick()
+                    self.set_message(q, 50)
+                    self.state = BotState.TALKING
+            # ─── Random idle remark (infrequent) ─────────────────
+            elif self.idle_timer > 100 and random.random() < 0.006:
+                self.idle_timer = 0
+                if self.mood.face == "lonely":
+                    self.set_message("Hey... are you still there? Talk to me!", 40)
+                    self.state = BotState.TALKING
+                elif self.has_api:
+                    self._bg_proactive_call(
+                        "You're a terminal bot and your programmer has been very quiet. Say something funny, random, or oddly relatable "
+                        "to break the silence — fun fact, weird robot thought, stretch reminder, anything. 1-2 sentences."
+                    )
                 else:
                     self.set_message(random.choice(IDLE_MESSAGES), 40)
                     self.state = BotState.TALKING
 
-        # Pomodoro
+        # ─── Pomodoro ────────────────────────────────────────────
         if self.pomodoro.active:
             result = self.pomodoro.tick()
             if result == "work_done":
@@ -879,7 +1274,7 @@ class TerminalBuddy:
                 self.set_message("Break over! Press [o] for another.", 40)
                 self.pomodoro.active = False
 
-        # Shell history (~3s)
+        # ─── Shell history (~3s) ─────────────────────────────────
         if self.tick % 30 == 0 and self.state == BotState.IDLE:
             new_cmd = self.shell_watcher.poll()
             if new_cmd:
@@ -887,8 +1282,9 @@ class TerminalBuddy:
                 if reaction:
                     self.set_message(reaction, 35)
                     self.state = BotState.TALKING
+                    self.mood.on_interaction()
 
-        # Clipboard (~5s)
+        # ─── Clipboard (~5s) ─────────────────────────────────────
         if self.tick % 50 == 0 and self.state == BotState.IDLE:
             clip_msg = self.clipboard_watcher.poll()
             if clip_msg:
@@ -896,35 +1292,50 @@ class TerminalBuddy:
                 self.state = BotState.TALKING
                 self.force_wink = True
 
-        # Git streak (~30s)
+        # ─── Git commit detection (~3s) ───────────────────────────
+        if self.tick % 30 == 5:
+            result = self.commit_watcher.poll()
+            if result:
+                commit_msg, reaction = result
+                short = commit_msg[:40] + ("..." if len(commit_msg) > 40 else "")
+                self.set_message(f"{reaction}\n\"{short}\"", 55)
+                self.state = BotState.CELEBRATING
+                self.celebration_ticks = 0
+                self.mood.on_achievement()
+                threading.Thread(target=self.git_streak.update_streak, daemon=True).start()
+
+        # ─── Git streak (~30s) ───────────────────────────────────
         if self.tick % 300 == 0:
             threading.Thread(target=self.git_streak.update_streak, daemon=True).start()
 
-        # Weather (~30min)
+        # ─── Weather (~30min) ────────────────────────────────────
         if self.tick % 18000 == 0 and self.weather.should_refresh():
             threading.Thread(target=self.weather.fetch_weather, daemon=True).start()
 
-        # Uptime achievement
+        # ─── Uptime achievement ──────────────────────────────────
         if self.uptime.elapsed() > 3600:
             self.achievements.unlock("hour_session")
 
-        # Achievement notifications
+        # ─── Achievement notifications ───────────────────────────
         if self.state == BotState.IDLE:
             note = self.achievements.get_notification()
             if note:
                 self.set_message(f"ACHIEVEMENT UNLOCKED!\n{note}", 45)
                 self.state = BotState.CELEBRATING
+                self.mood.on_achievement()
 
     def _handle_result(self, rtype, data):
         if rtype == "chat_response":
-            if data:
-                self.state = BotState.TALKING
-                self.set_message(data, max(50, len(data)))
-                self.chat_history.append(("buddy", data))
+            reply = data or get_local_response(self.last_user_said or "")
+            self.state = BotState.TALKING
+            if self.last_user_said:
+                you = self.last_user_said[:40] + ("..." if len(self.last_user_said) > 40 else "")
+                full_msg = f"You: {you}\n{'─' * min(len(you) + 5, 44)}\n{reply}"
+                self.last_user_said = ""
             else:
-                fallback = get_local_response(self.chat_history[-1][1] if self.chat_history else "")
-                self.state = BotState.TALKING
-                self.set_message(fallback, 40)
+                full_msg = reply
+            self.set_message(full_msg, max(120, len(full_msg)))
+            self.chat_history.append(("buddy", reply))
 
         elif rtype in ("motivate_response", "joke_response", "roast_response", "commit_response", "idle_response"):
             if data:
@@ -980,11 +1391,16 @@ class TerminalBuddy:
 
         def cleanup(sig=None, frame=None):
             self.running = False
+            self.mood.save()
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
             sys.stdout.write(SHOW_CURSOR)
-            sys.stdout.write(CLEAR_SCREEN)
-            sys.stdout.write(move(1, 1))
-            print(f"\n  {C.ACCENT}{BOLD}{random.choice(FAREWELL)}{RESET}\n")
+            sys.stdout.write(ALT_SCREEN_OFF)
+            farewell = random.choice(FAREWELL)
+            # Pretty farewell
+            print(f"\n  {C.BODY_DARK}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+            print(f"  {C.ACCENT}{BOLD}{farewell}{RESET}")
+            print(f"  {DIM}mood: {self.mood.face} | interactions: {self.mood.total_interactions}{RESET}")
+            print(f"  {C.BODY_DARK}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}\n")
             sys.exit(0)
 
         signal.signal(signal.SIGINT, cleanup)
@@ -993,12 +1409,19 @@ class TerminalBuddy:
 
         try:
             tty.setcbreak(sys.stdin.fileno())
+            sys.stdout.write(ALT_SCREEN_ON)
             sys.stdout.write(CLEAR_SCREEN)
 
             greeting = random.choice(self.greeting_pool)
+            # Mood-aware greeting
+            if self.mood.loneliness > 60:
+                greeting = "You're back! I missed you!"
+            elif self.mood.face == "ecstatic":
+                greeting = "Hey! I'm feeling AMAZING today!"
             hint = "\nPress [t] to chat! [/] for all controls"
             self.set_message(f"{greeting}{hint}", 50)
             self.state = BotState.GREETING
+            self.mood.on_interaction()
 
             if self.weather.should_refresh():
                 threading.Thread(target=self.weather.fetch_weather, daemon=True).start()
@@ -1168,7 +1591,7 @@ def oneshot(api_key=None):
         msg = client.send_oneshot("Give me one short, punchy motivational quote for a programmer. Max 2 sentences.")
     if not msg:
         msg = random.choice(MOTIVATIONAL)
-    body = make_body(Eyes.HAPPY_L, Eyes.HAPPY_R, Mouths.GRIN)
+    body = make_body(Eyes.HAPPY_L, Eyes.HAPPY_R, Mouths.GRIN, led_color=C.LED_HAPPY)
     bubble = speech_bubble(msg)
     print()
     for line in bubble: print(f"  {line}")
@@ -1208,7 +1631,7 @@ Environment:
         if api_key:
             msg = AnthropicChat(api_key).send_oneshot("Give me one unique motivational quote for a programmer. Max 2 sentences.")
         if not msg: msg = random.choice(MOTIVATIONAL)
-        body = make_body(Eyes.STAR_L, Eyes.STAR_R, Mouths.GRIN)
+        body = make_body(Eyes.STAR_L, Eyes.STAR_R, Mouths.GRIN, led_color=C.LED_HAPPY)
         for line in speech_bubble(msg): print(f"  {line}")
         for line in body: print(f"  {line}")
         print()
@@ -1219,7 +1642,7 @@ Environment:
         if api_key:
             msg = AnthropicChat(api_key).send_oneshot("Tell me one original, short programming joke.")
         if not msg: msg = random.choice(JOKES)
-        body = make_body(Eyes.WINK_L, Eyes.WINK_R, Mouths.GRIN)
+        body = make_body(Eyes.WINK_L, Eyes.WINK_R, Mouths.GRIN, led_color=C.LED_TALK)
         for line in speech_bubble(msg): print(f"  {line}")
         for line in body: print(f"  {line}")
         print()
