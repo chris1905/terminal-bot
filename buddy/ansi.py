@@ -112,6 +112,18 @@ class C:
     MOOD_MEH   = fg(255, 160, 60)
     MOOD_SAD   = fg(255, 80, 80)
 
+    # Weather
+    SUN        = fg(255, 210, 40)
+    SUN_RAY    = fg(255, 170, 30)
+    RAIN_DROP  = fg(90, 150, 255)
+    RAIN_HEAVY = fg(60, 110, 220)
+    SNOW_FLAKE = fg(200, 225, 255)
+    THUNDER_BG = fg(55, 55, 80)
+    LIGHTNING  = fg(255, 255, 110)
+    FOG_COLOR  = fg(145, 148, 162)
+    WIND_COLOR = fg(170, 200, 225)
+    CLOUD_DARK = fg(90, 95, 115)
+
     # Skin-specific (kept for compatibility)
     CAT        = fg(255, 180, 100)
     DOG        = fg(200, 160, 100)

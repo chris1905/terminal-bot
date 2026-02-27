@@ -216,7 +216,7 @@ import math
 #        ░░░░░               shadow
 
 def make_body(left_eye, right_eye, mouth, led_color=None, breath_phase=0,
-              left_arm="", right_arm="", panel_char="◆"):
+              left_arm="", right_arm="", panel_char="◆", inner_text=None):
     """Build the bot. Every eye=3 chars, mouth=5 chars, inner=11."""
     if led_color is None:
         led_color = C.LED_IDLE
@@ -225,12 +225,18 @@ def make_body(left_eye, right_eye, mouth, led_color=None, breath_phase=0,
 
     #                          inner width = 11
     #                          ├───────────┤
+    if inner_text is not None:
+        padded = (inner_text + "           ")[:11]
+        inner_row = f"   {bc}│{RESET}{DIM}{C.PANEL}{padded}{RESET}{bc}│{RESET}"
+    else:
+        inner_row = f"   {bc}│           │{RESET}"
+
     return [
         f"         {bd}┃{RESET}",
         f"      {bc}╭──{led_color}◆{RESET}{bc}──╮{RESET}",
         f"   {bc}╭──┘     └──╮{RESET}",
         f"   {bc}│{RESET} {left_eye}   {right_eye} {bc}│{RESET}",
-        f"   {bc}│           │{RESET}",
+        inner_row,
         f"   {bc}│{RESET}   {mouth}   {bc}│{RESET}",
         f"   {bc}╰──┬─────┬──╯{RESET}",
         f"  {left_arm} {bd}│{C.PANEL} ░{panel_char}░ {bd}│{RESET} {right_arm}",
@@ -427,6 +433,9 @@ FIDGET_DURATIONS = {
     "wave_self":  10,
     "read_code":  12,
     "sneeze":     10,
+    "sunbathe":   14,
+    "shiver":     10,
+    "wind_blown": 8,
 }
 
 # Brief ambient messages shown when a fidget starts (only if screen is clear)
@@ -439,6 +448,9 @@ FIDGET_MESSAGES = {
     "think_deep": ["hmm...", "*stares into the void*", "...processing existence..."],
     "wave_self":  ["*waves at nothing*", "hi nobody!", "*waves to the shadows*"],
     "read_code":  ["*reads your code*", "*squints at the diff*", "...interesting choice..."],
+    "sunbathe":   ["ahh... vitamin D...", "*basks in the sun*", "peak productivity: it's warm out"],
+    "shiver":     ["*brrrrr*", "c-c-c-cold!!", "this is f-f-fine", "*rattles*"],
+    "wind_blown": ["*blown sideways*", "...windy day", "*grabs antenna*", "whoooa!!"],
 }
 
 # ─── Taylor Swift reactions ──────────────────────────────────────────────────
@@ -691,6 +703,16 @@ class TerminalBuddy:
                 return Eyes.BLINK, Eyes.BLINK
             else:
                 return Eyes.OPEN_L, Eyes.OPEN_R
+        if self.fidget_type == "sunbathe":
+            if self.fidget_frame < 5:
+                return Eyes.COOL_L, Eyes.COOL_R   # Sunglasses on
+            elif self.fidget_frame < 10:
+                return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R  # Basking
+            return Eyes.HAPPY_L, Eyes.HAPPY_R
+        if self.fidget_type == "shiver":
+            return Eyes.HALF_BLINK, Eyes.HALF_BLINK  # Squinting from cold
+        if self.fidget_type == "wind_blown":
+            return Eyes.WIDE_L, Eyes.WIDE_R  # Startled by wind
 
         # Input excitement — wide eyes when user just opened chat
         if self.input_active and self.tick - self.input_start_tick < 20:
@@ -788,6 +810,12 @@ class TerminalBuddy:
                 return Mouths.YAWN   # wide open for the sneeze
             else:
                 return Mouths.SMILE
+        if self.fidget_type == "sunbathe":
+            return Mouths.SMIRK  # Relaxed sun face
+        if self.fidget_type == "shiver":
+            return [Mouths.OPEN, Mouths.SMALL][self.tick % 2]  # Chattering teeth
+        if self.fidget_type == "wind_blown":
+            return Mouths.OPEN  # Mouth blown open
 
         s = self.state
         if s == BotState.SLEEPING: return Mouths.SLEEP
@@ -873,6 +901,13 @@ class TerminalBuddy:
                 any(w in self.weather.current.get("condition", "").lower()
                     for w in ("rain", "drizzle", "thunder", "snow"))):
             return Arms.UMBRELLA_L, Arms.REST_R
+        if self.fidget_type == "sunbathe":
+            f = self.fidget_frame % 4
+            return Arms.WAVE_L[f], Arms.WAVE_R[f]  # Stretching in the sun
+        if self.fidget_type == "shiver":
+            return Arms.HUG_L, Arms.HUG_R  # Self-hug for warmth
+        if self.fidget_type == "wind_blown":
+            return (Arms.CHEER_L, Arms.REST_R) if self.fidget_frame % 2 == 0 else (Arms.REST_L, Arms.CHEER_R)
         # SWIFTIE MODE: both arms in the air, flailing
         if self.swiftie_mode:
             f = (self.tick // 2) % 4
@@ -986,10 +1021,11 @@ class TerminalBuddy:
         left_arm, right_arm = self.get_arms()
         led = self.get_led_color()
         panel = self.get_panel_char()
+        inner = self._get_inner_text()
         body = make_body(left_eye, right_eye, mouth, led_color=led,
                          breath_phase=self.breath_phase,
                          left_arm=left_arm, right_arm=right_arm,
-                         panel_char=panel)
+                         panel_char=panel, inner_text=inner)
         dance_offset = self.get_dance_offset()
         # Bounce fidget: shift body up by 1
         if self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
@@ -998,6 +1034,8 @@ class TerminalBuddy:
             bounce_offset = -1
         elif self.fidget_type == "sneeze" and self.fidget_frame == 5:
             bounce_offset = -2  # Big ACHOO! lurch
+        elif self.fidget_type == "shiver" and self.tick % 2 == 0:
+            bounce_offset = -1  # Rapid shaking
         elif self.swiftie_mode and self.tick % 4 < 2:
             bounce_offset = -1  # SWIFTIE: intense non-stop bounce
         elif self.music_playing and self.state == BotState.IDLE and self.tick % 8 < 2:
@@ -1010,6 +1048,12 @@ class TerminalBuddy:
             if 1 < row < self.rows - 3:
                 out.append(move(row, 2 + dance_offset))
                 out.append(line)
+
+        # ─── Weather hat ──────────────────────────────────
+        self._render_weather_hat(out, body_start, dance_offset)
+
+        # ─── Weather FX ───────────────────────────────────
+        self._render_weather_fx(out, body_start)
 
         # ─── Sleeping ZZZs (floating upward) ──────────────
         if self.state == BotState.SLEEPING:
@@ -1465,7 +1509,17 @@ class TerminalBuddy:
             elif self.fidget_type == "sneeze" and self.fidget_frame == 5 and not self.message:
                 self.set_message("*ACHOO!*", 12)  # Sneeze burst!
         elif self.state == BotState.IDLE and now >= self.next_fidget:
-            self.fidget_type = random.choice(IDLE_FIDGETS)
+            # Build weather-biased fidget pool
+            _pool = list(IDLE_FIDGETS)
+            if self.weather.current:
+                _cond = self.weather.current.get("condition", "").lower()
+                if any(w in _cond for w in ("clear", "sunny")):
+                    _pool.extend(["sunbathe"] * 3)
+                if "snow" in _cond:
+                    _pool.extend(["shiver"] * 4)
+                if "wind" in _cond:
+                    _pool.extend(["wind_blown"] * 3)
+            self.fidget_type = random.choice(_pool)
             self.fidget_frame = 0
             self.fidget_timer = 0
             self.mood.on_fidget()
@@ -1716,6 +1770,205 @@ class TerminalBuddy:
                 self.set_message(f"ACHIEVEMENT UNLOCKED!\n{note}", 45)
                 self.state = BotState.CELEBRATING
                 self.mood.on_achievement()
+
+    # ─── Weather visual helpers ───────────────────────────────────────
+
+    def _get_inner_text(self):
+        """Text for the bot's inner body row (11 visible chars or None)."""
+        t = self.tick
+        if self.swiftie_mode:
+            return [" ♥  ♥  ♥  ♥", "  ♥  ♥  ♥  "][(t // 2) % 2]
+        if self.music_playing:
+            return [" ♪  ♫  ♩  ♬", "  ♬  ♩  ♫  "][(t // 2) % 2]
+        if self.state == BotState.SLEEPING:
+            return [" z   Z   z ", "  z  Z   z "][(t // 4) % 2]
+        if self.state == BotState.COFFEE:
+            return ["  ˜ ˜ ˜ ˜  ", "   ˜ ˜ ˜   "][(t // 3) % 2]
+        if self.weather.current and self.state == BotState.IDLE:
+            cond = self.weather.current.get("condition", "").lower()
+            if "snow" in cond:
+                return ["  ❄  ❄  ❄ ", " ❄  ❄  ❄  "][(t // 4) % 2]
+            if any(w in cond for w in ("rain", "drizzle")):
+                return [" · · · · · ", "· · · · ·  "][(t // 3) % 2]
+            if "thunder" in cond:
+                return [" ⚡  ·  ⚡ ", "  ·  ⚡  · "][(t // 5) % 2]
+            if any(w in cond for w in ("clear", "sunny")):
+                return [" ·  ☀  ·  ", "  · ☀  ·  "][(t // 6) % 2]
+            if any(w in cond for w in ("wind",)):
+                return [" ~≈~≈~≈~≈~ ", "≈~≈~≈~≈~≈ "][(t // 2) % 2]
+            if any(w in cond for w in ("fog", "mist")):
+                return [" ░ ▒ ░ ▒ ░ ", " ▒ ░ ▒ ░ ▒ "][(t // 6) % 2]
+        return None
+
+    def _render_weather_hat(self, out, body_start, dance_offset):
+        """Render a weather-specific hat/accessory above the bot's antenna."""
+        if not self.weather.current or body_start < 5:
+            return
+        cond = self.weather.current.get("condition", "").lower()
+        col = 2 + dance_offset
+        # antenna stalk is at col+9; hat lines rendered at body_start-1 and -2
+
+        if any(w in cond for w in ("clear", "sunny")):
+            hour = datetime.datetime.now().hour
+            if 6 <= hour < 20:  # daytime sun hat
+                sc = C.SUN
+                rc = C.SUN_RAY
+                if body_start - 2 > 2:
+                    out.append(move(body_start - 2, col))
+                    out.append(f"         {sc}╤{RESET}")       # hat crown at stalk
+                if body_start - 1 > 2:
+                    out.append(move(body_start - 1, col))
+                    out.append(f"     {rc}╔═══════╗{RESET}")   # wide brim
+
+        elif "snow" in cond:
+            sc = C.SNOW_FLAKE
+            if body_start - 2 > 2:
+                out.append(move(body_start - 2, col))
+                out.append(f"       {sc}╭───╮{RESET}")         # beanie top
+            if body_start - 1 > 2:
+                out.append(move(body_start - 1, col))
+                out.append(f"       {sc}│❄❄❄│{RESET}")         # beanie band
+
+        elif any(w in cond for w in ("thunder", "storm")):
+            tc = C.CLOUD_DARK
+            if body_start - 1 > 2:
+                out.append(move(body_start - 1, col))
+                out.append(f"     {tc}╔═══════╗{RESET}")       # storm hood
+
+        elif any(w in cond for w in ("cloudy", "overcast")):
+            cc = C.CLOUD_DARK
+            if body_start - 1 > 2:
+                out.append(move(body_start - 1, col))
+                out.append(f"     {DIM}{cc}╭───────╮{RESET}")  # cloud hat
+
+        elif any(w in cond for w in ("fog", "mist")):
+            fc = C.FOG_COLOR
+            if body_start - 1 > 2:
+                out.append(move(body_start - 1, col))
+                out.append(f"      {DIM}{fc}~~~~~{RESET}")      # fog wisps above
+
+    def _render_weather_fx(self, out, body_start):
+        """Render weather particle effects around the bot."""
+        if not self.weather.current:
+            return
+        cond = self.weather.current.get("condition", "").lower()
+        t = self.tick
+
+        if any(w in cond for w in ("rain", "drizzle", "heavy rain")):
+            # Falling drops in right portion of screen
+            rc = C.RAIN_DROP
+            sc = C.RAIN_HEAVY
+            intensity = 14 if "heavy" in cond else 9
+            for i in range(min(intensity, (self.cols - 28) // 3)):
+                col = 28 + i * 3
+                if col >= self.cols - 2:
+                    break
+                speed = 1 + (i % 3)
+                drop_row = ((t * speed + i * 7) % max(1, self.rows - 4)) + 2
+                if 1 < drop_row < self.rows - 2:
+                    out.append(move(drop_row, col))
+                    out.append(f"{rc}│{RESET}")
+                if drop_row > 2:
+                    out.append(move(drop_row - 1, col))
+                    out.append(f"{sc}·{RESET}")
+
+        elif "snow" in cond:
+            # Drifting snowflakes across full screen
+            flakes = ['❄', '✦', '·', '*', '✧']
+            sc = C.SNOW_FLAKE
+            for i in range(12):
+                phase = t // 4 + i * 17
+                col = (i * 11 + phase // 6) % max(1, self.cols - 3) + 1
+                row = (phase + i * 5) % max(1, self.rows - 3) + 1
+                char = flakes[i % len(flakes)]
+                if 1 < row < self.rows - 1 and 1 < col < self.cols - 1:
+                    out.append(move(row, col))
+                    out.append(f"{sc}{char}{RESET}")
+
+        elif any(w in cond for w in ("thunder", "storm")):
+            # Dark clouds top-right + lightning flashes
+            if self.cols >= 36:
+                cc = C.CLOUD_DARK
+                lc = C.LIGHTNING
+                c_col = self.cols - 17
+                if c_col > 22:
+                    out.append(move(2, c_col))
+                    out.append(f"{cc}╭───────╮{RESET}")
+                    out.append(move(3, c_col))
+                    out.append(f"{cc}│▓▓▓▓▓▓▓│{RESET}")
+                    out.append(move(4, c_col))
+                    out.append(f"{cc}╰──┬────╯{RESET}")
+                    # Lightning bolt – flashes every ~5 seconds
+                    if t % 52 < 4:
+                        out.append(move(5, c_col + 4))
+                        out.append(f"{lc}⚡{RESET}")
+                        out.append(move(6, c_col + 5))
+                        out.append(f"{lc}⚡{RESET}")
+
+        elif any(w in cond for w in ("clear", "sunny")):
+            # Animated sun in top-right corner
+            if self.cols >= 36:
+                sc = C.SUN
+                rc = C.SUN_RAY
+                s_col = self.cols - 8
+                s_row = 2
+                if s_col > 22:
+                    out.append(move(s_row, s_col))
+                    out.append(f"{sc}( ☀ ){RESET}")
+                    # Rotating rays
+                    ray_a = ['╲', '│', '╱', '─'][(t // 6) % 4]
+                    ray_b = ['╱', '╲', '│', '╱'][(t // 6) % 4]
+                    if s_row - 1 > 1:
+                        out.append(move(s_row - 1, s_col - 1))
+                        out.append(f"{rc}{ray_a}{RESET}")
+                        out.append(move(s_row - 1, s_col + 4))
+                        out.append(f"{rc}{ray_b}{RESET}")
+                    out.append(move(s_row, s_col - 2))
+                    out.append(f"{rc}─{RESET}")
+                    out.append(move(s_row, s_col + 6))
+                    out.append(f"{rc}─{RESET}")
+
+        elif any(w in cond for w in ("partly cloudy", "cloudy", "overcast")):
+            # Fluffy clouds top-right
+            if self.cols >= 40:
+                cc = C.CLOUD_DARK
+                c_col = self.cols - 18
+                if c_col > 22:
+                    out.append(move(2, c_col))
+                    out.append(f"{DIM}{cc} ╭──╮  ╭─╮{RESET}")
+                    out.append(move(3, c_col))
+                    out.append(f"{DIM}{cc}╭╯  ╰──╯ ╰╮{RESET}")
+                    out.append(move(4, c_col))
+                    out.append(f"{DIM}{cc}╰──────────╯{RESET}")
+
+        elif any(w in cond for w in ("fog", "mist")):
+            # Drifting grey wisps through the scene
+            fc = C.FOG_COLOR
+            for layer in range(3):
+                row = body_start + 2 + layer * 3
+                if row >= self.rows - 3:
+                    break
+                offset = (t // 5 + layer * 15) % max(1, self.cols)
+                col_start = max(24, 24 + offset % 18)
+                wisp = ("░▒░  " * 6)[:max(0, self.cols - col_start - 1)]
+                if wisp and 1 < row < self.rows - 1:
+                    out.append(move(row, col_start))
+                    out.append(f"{DIM}{fc}{wisp}{RESET}")
+
+        elif "wind" in cond:
+            # Horizontal wind streaks sweeping past
+            wc = C.WIND_COLOR
+            streak_set = ["~≈~", "≈~≈", "~~~", "≈≈≈"]
+            for i in range(4):
+                row = body_start + 1 + i * 2
+                if row >= self.rows - 3:
+                    break
+                speed = 2 + (i % 3)
+                col = 25 + ((t * speed + i * 23) % max(1, self.cols - 30))
+                streak = streak_set[i % len(streak_set)]
+                if col < self.cols - 5 and 1 < row < self.rows - 1:
+                    out.append(move(row, col))
+                    out.append(f"{wc}{streak}{RESET}")
 
     def _handle_result(self, rtype, data):
         if rtype == "chat_response":
