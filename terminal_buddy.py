@@ -731,6 +731,7 @@ class TerminalBuddy:
         self.input_buffer = ""
         self.chat_history = []
         self.last_user_said = ""       # shown while API is thinking
+        self.message_log = []          # [(role, text)] — recent messages for scrollback display
         self.question_pool = NonRepeatingPool(BUDDY_QUESTIONS)
         self.next_question_tick = random.randint(800, 1500)  # ask first question after ~80-150s
 
@@ -1331,6 +1332,12 @@ class TerminalBuddy:
                 out.append(move(ind_row, 10))
                 out.append(f"{C.YELLOW}  {spinner} building...{RESET}")
 
+        # ─── Message log (recent chat below bot) ─────────
+        log_start = body_start + len(body) + 2 + bounce_offset
+        log_space = (self.rows - 3) - log_start  # rows available before bottom bars
+        if log_space > 0 and self.message_log:
+            self._render_message_log(out, log_start, min(3, log_space))
+
         # ─── Bottom bars ─────────────────────────────────
 
         input_row = self.rows - 1
@@ -1490,6 +1497,15 @@ class TerminalBuddy:
         self.message_timer = duration
         # Typewriter: instantly reveal short msgs; gradually reveal long ones
         self.typewriter_pos = 1 if len(msg) > 20 else len(msg)
+
+    def _log_msg(self, role, text):
+        """Append a message to the scrollback log. role='you' or 'buddy'."""
+        # Collapse multi-line to single line for the log
+        flat = " ".join(text.split("\n")).strip()
+        if flat:
+            self.message_log.append((role, flat))
+            if len(self.message_log) > 50:
+                self.message_log = self.message_log[-50:]
 
     def _bg_api_call(self, prompt, result_type="ai_response", system_override=None):
         def _call():
@@ -1726,6 +1742,7 @@ class TerminalBuddy:
         self.achievements.increment("chat_count")
         self.mood.on_chat()
         self.chat_history.append(("user", text))
+        self._log_msg("you", text)
         self.last_user_said = text
         if self.has_api:
             self.state = BotState.PROCESSING
@@ -2187,6 +2204,28 @@ class TerminalBuddy:
             return self._inner_thought
         return None
 
+    def _render_message_log(self, out, start_row, max_rows):
+        """Render recent message history below the bot body."""
+        if not self.message_log or max_rows < 1:
+            return
+        max_w = self.cols - 8  # padding on both sides
+        entries = self.message_log[-(max_rows):]
+        row = start_row
+        for role, text in entries:
+            if row >= self.rows - 2:
+                break
+            # Truncate to fit
+            short = text[:max_w]
+            if len(text) > max_w:
+                short = short[:max_w - 3] + "..."
+            if role == "you":
+                line = f"  {C.SHADOW}┊{RESET} {C.INPUT}you:{RESET} {DIM}{short}{RESET}"
+            else:
+                line = f"  {C.SHADOW}┊{RESET} {C.ACCENT2}buddy:{RESET} {DIM}{short}{RESET}"
+            out.append(move(row, 1))
+            out.append(truncate_ansi(line, self.cols - 1))
+            row += 1
+
     def _render_weather_hat(self, out, body_start, dance_offset):
         """Render a weather-specific hat/accessory above the bot's antenna."""
         if not self.weather.current or body_start < 5:
@@ -2372,11 +2411,13 @@ class TerminalBuddy:
                 full_msg = reply
             self.set_message(full_msg, max(120, len(full_msg)))
             self.chat_history.append(("buddy", reply))
+            self._log_msg("buddy", reply)
 
         elif rtype in ("motivate_response", "joke_response", "roast_response", "commit_response", "idle_response", "ai_response"):
             if data:
                 self.state = BotState.CELEBRATING if rtype == "motivate_response" else BotState.TALKING
                 self.set_message(data, max(50, len(data)))
+                self._log_msg("buddy", data)
             else:
                 if rtype == "motivate_response":
                     self.state = BotState.CELEBRATING
@@ -2506,6 +2547,7 @@ class TerminalBuddy:
             if data:
                 self.state = BotState.TALKING
                 self.set_message(data, max(50, len(data)))
+                self._log_msg("buddy", data)
 
         # ─── New awareness result handlers ─────────────────────────
         elif rtype == "calendar_alert":
