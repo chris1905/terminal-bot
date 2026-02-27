@@ -23,7 +23,7 @@ class Mood:
 
     def _load(self):
         try:
-            os.makedirs(STATE_DIR, exist_ok=True)
+            os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE) as f:
                     data = json.load(f)
@@ -44,7 +44,7 @@ class Mood:
 
     def save(self):
         try:
-            os.makedirs(STATE_DIR, exist_ok=True)
+            os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
             data = {
                 "happiness": round(self.happiness, 1),
                 "energy": round(self.energy, 1),

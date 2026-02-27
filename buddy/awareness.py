@@ -375,10 +375,13 @@ class WebResearcher:
 
     def _make_ssl_ctx(self):
         import ssl
-        try:
-            return ssl.create_default_context(cafile="/etc/ssl/cert.pem")
-        except Exception:
-            return ssl._create_unverified_context()
+        for cafile in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+                       "/usr/local/etc/openssl/cert.pem"):
+            try:
+                return ssl.create_default_context(cafile=cafile)
+            except Exception:
+                continue
+        return ssl.create_default_context()  # Use system/Python default trust store
 
     def fetch_ddg(self, query):
         """Fetch DuckDuckGo instant answer. Returns text snippet or None."""

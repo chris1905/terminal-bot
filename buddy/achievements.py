@@ -42,7 +42,7 @@ class AchievementTracker:
 
     def _save(self):
         try:
-            os.makedirs(os.path.dirname(self.save_path), exist_ok=True)
+            os.makedirs(os.path.dirname(self.save_path), mode=0o700, exist_ok=True)
             tmp = self.save_path + ".tmp"
             with open(tmp, "w") as f:
                 json.dump({"unlocked": self.unlocked, "counters": self.counters}, f, indent=2)

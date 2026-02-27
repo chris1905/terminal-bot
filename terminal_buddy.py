@@ -132,11 +132,17 @@ class AnthropicChat:
         try:
             import ssl
             # macOS Python from python.org doesn't bundle SSL certs by default.
-            # Try system certs first, fall back to unverified.
-            try:
-                ssl_ctx = ssl.create_default_context(cafile="/etc/ssl/cert.pem")
-            except Exception:
-                ssl_ctx = ssl._create_unverified_context()
+            # Try known cert locations; raise if none found (never skip verification).
+            ssl_ctx = None
+            for cafile in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+                           "/usr/local/etc/openssl/cert.pem"):
+                try:
+                    ssl_ctx = ssl.create_default_context(cafile=cafile)
+                    break
+                except Exception:
+                    continue
+            if ssl_ctx is None:
+                ssl_ctx = ssl.create_default_context()  # Use system/Python default trust store
 
             payload = json.dumps({
                 "model": "claude-haiku-4-5-20251001",
@@ -169,6 +175,15 @@ class AnthropicChat:
             except Exception:
                 pass
             return None
+
+
+# ─── Security helpers ────────────────────────────────────────────────────────
+
+_ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))')
+
+def strip_ansi(text):
+    """Remove ANSI/VT escape sequences from untrusted external strings."""
+    return _ANSI_ESCAPE_RE.sub('', text) if text else text
 
 
 # ─── Local response engine ───────────────────────────────────────────────────
@@ -1605,6 +1620,7 @@ class TerminalBuddy:
             result = self.commit_watcher.poll()
             if result:
                 commit_msg, reaction = result
+                commit_msg = strip_ansi(commit_msg)
                 short = commit_msg[:40] + ("..." if len(commit_msg) > 40 else "")
                 self.state = BotState.CELEBRATING
                 self.celebration_ticks = 0
@@ -1734,7 +1750,7 @@ class TerminalBuddy:
                 ).start()
 
         elif rtype == "curiosity_found":
-            query, snippet = data
+            query, snippet = strip_ansi(data[0]), strip_ansi(data[1])
             short_q = query[:38] + ("..." if len(query) > 38 else "")
             msg = f"Ooh, I went down a rabbit hole!\n\"{short_q}\"\n[1] Tell me!  [2] Skip"
             self.pending_curiosity = {"query": query, "snippet": snippet}
@@ -1750,7 +1766,8 @@ class TerminalBuddy:
         elif rtype == "music_poll_done":
             self.music_playing = self.music_watcher.is_playing
             if data:  # New song started
-                track, artist = data
+                track, artist = strip_ansi(data[0]), strip_ansi(data[1])
+                data = (track, artist)
                 self.mood.on_play()
                 short_t = track[:38] + ("..." if len(track) > 38 else "")
                 short_a = artist[:30] + ("..." if len(artist) > 30 else "")
