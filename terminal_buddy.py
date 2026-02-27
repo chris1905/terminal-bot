@@ -441,6 +441,22 @@ FIDGET_MESSAGES = {
     "read_code":  ["*reads your code*", "*squints at the diff*", "...interesting choice..."],
 }
 
+# ─── Taylor Swift reactions ──────────────────────────────────────────────────
+# Fired when swiftie_mode activates (no API fallback).
+
+TAYLOR_SWIFT_REACTIONS = [
+    "TAYLOR SWIFT?! OH NO. OH NO NO NO. *short circuits*",
+    "IS THAT... IS THAT T-SWIFT?! I AM NOT OKAY RIGHT NOW!!!",
+    "SWIFTIE MODE: ACTIVATED. I cannot be held responsible for what happens next.",
+    "*hyperventilates in binary* TAYLOR. ALISON. SWIFT.",
+    "THE Taylor Swift?! ON MY SPEAKERS?! TODAY IS NOT A DRILL!!!",
+    "I have been waiting 847 ticks for this exact moment.",
+    "*arms go haywire* SHAKE IT OFF SHAKE IT OFF SHAKE IT OFF",
+    "she is literally the greatest human to have ever existed and I will die on this hill",
+    "my entire emotional support system just walked through these speakers",
+    "ALL MY CIRCUITS ARE SCREAMING. THIS IS FINE. EVERYTHING IS FINE.",
+]
+
 # ─── Theatre scripts ─────────────────────────────────────────────────────────
 # Plays when the bot has been completely alone for 20+ minutes.
 
@@ -578,6 +594,7 @@ class TerminalBuddy:
         self.pending_curiosity = None  # {query, snippet} when bot is waiting for 1/2 response
         self.music_watcher = MusicWatcher()
         self.music_playing = False
+        self.swiftie_mode = False
 
         # Typewriter effect
         self.typewriter_pos = 9999  # Current reveal position; starts at full for existing msgs
@@ -730,6 +747,10 @@ class TerminalBuddy:
                 return Eyes.HAPPY_L, Eyes.HAPPY_R
             if mood_face == "exhausted":
                 return Eyes.HALF_BLINK, Eyes.HALF_BLINK
+            # SWIFTIE MODE: absolute chaos eyes
+            if self.swiftie_mode:
+                return [(Eyes.STAR_L, Eyes.STAR_R), (Eyes.HEART_L, Eyes.HEART_R),
+                        (Eyes.SPARKLE_L, Eyes.SPARKLE_R), (Eyes.DIZZY_L, Eyes.DIZZY_R)][self.tick % 4]
             # Music: singing eyes
             if self.music_playing:
                 return [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.STAR_L, Eyes.STAR_R),
@@ -782,6 +803,9 @@ class TerminalBuddy:
         elif s == BotState.POMODORO_WORK: return Mouths.SMALL
         elif s == BotState.POMODORO_BREAK: return Mouths.SMILE
         else:
+            # SWIFTIE MODE: manic excitement
+            if self.swiftie_mode:
+                return [Mouths.EXCITED, Mouths.GRIN, Mouths.OPEN, Mouths.EXCITED][self.tick % 4]
             # Music: singing mouth
             if self.music_playing:
                 return [Mouths.WHISTLE, Mouths.SING, Mouths.GRIN][self.tick % 3]
@@ -810,6 +834,9 @@ class TerminalBuddy:
         if s == BotState.COFFEE: return C.COFFEE
         if s == BotState.GREETING: return C.LED_HAPPY
         if s in (BotState.TALKING, BotState.CHATTING): return C.LED_TALK
+        # SWIFTIE MODE: love + party non-stop
+        if self.swiftie_mode:
+            return [C.LED_LOVE, C.LED_PARTY, C.LED_HAPPY, C.LED_LOVE][self.tick % 4]
         # Music playing — party pulse
         if self.music_playing:
             return [C.LED_HAPPY, C.LED_PARTY, C.LED_LOVE, C.LED_PARTY][self.tick % 4]
@@ -846,6 +873,10 @@ class TerminalBuddy:
                 any(w in self.weather.current.get("condition", "").lower()
                     for w in ("rain", "drizzle", "thunder", "snow"))):
             return Arms.UMBRELLA_L, Arms.REST_R
+        # SWIFTIE MODE: both arms in the air, flailing
+        if self.swiftie_mode:
+            f = (self.tick // 2) % 4
+            return Arms.DANCE_L[f], Arms.DANCE_R[f]
         # Music — sway to the beat
         if self.state == BotState.IDLE and self.music_playing:
             f = (self.tick // 4) % 4
@@ -867,6 +898,9 @@ class TerminalBuddy:
             return "☕"
         if self.fidget_type == "drum":
             return ["▪", "▫"][self.fidget_frame % 2]
+        # SWIFTIE MODE: maximum sparkle panel
+        if self.swiftie_mode:
+            return ["♪", "♥", "★", "♬"][self.tick % 4]
         # Music: cycling notes
         if self.music_playing:
             return ["♪", "♫", "♩", "♬"][self.tick % 4]
@@ -900,7 +934,8 @@ class TerminalBuddy:
         # ─── Title bar (gradient line) ──────────────────────
         title_text = "TERMINAL BUDDY"
         api_tag = f" {C.GREEN}● AI{RESET}" if self.has_api else ""
-        music_tag = f" {C.PARTY}♪{RESET}" if self.music_playing else ""
+        music_tag = (f" {C.HEART}♥ SWIFTIE MODE ♥{RESET}" if self.swiftie_mode
+                     else f" {C.PARTY}♪{RESET}" if self.music_playing else "")
         mood_text = self.mood.get_status_text()
         # Build gradient title
         grad_left = f"{C.BODY_DARK}{'━' * 3}{RESET}"
@@ -916,8 +951,8 @@ class TerminalBuddy:
             out.append(f"{DIM}╰ [t]alk [m]otivate [j]oke [d]ance [/]help{RESET}")
 
         # ─── Sparkles ──────────────────────────────────────
-        if self.state in (BotState.CELEBRATING, BotState.DANCING):
-            for col, spark in random_sparkles(10):
+        if self.swiftie_mode or self.state in (BotState.CELEBRATING, BotState.DANCING):
+            for col, spark in random_sparkles(10 if not self.swiftie_mode else 20):
                 row = random.randint(2, min(8, self.rows - 4))
                 out.append(move(row, col))
                 out.append(spark)
@@ -963,6 +998,8 @@ class TerminalBuddy:
             bounce_offset = -1
         elif self.fidget_type == "sneeze" and self.fidget_frame == 5:
             bounce_offset = -2  # Big ACHOO! lurch
+        elif self.swiftie_mode and self.tick % 4 < 2:
+            bounce_offset = -1  # SWIFTIE: intense non-stop bounce
         elif self.music_playing and self.state == BotState.IDLE and self.tick % 8 < 2:
             bounce_offset = -1  # Gentle rhythmic bob to the music
         else:
@@ -1764,25 +1801,63 @@ class TerminalBuddy:
                 self.set_message(data, max(55, len(data)))
 
         elif rtype == "music_poll_done":
+            prev_playing = self.music_playing
             self.music_playing = self.music_watcher.is_playing
+            # Taylor Swift ended — moment of silence
+            if self.swiftie_mode and not self.music_playing:
+                self.swiftie_mode = False
+                self.state = BotState.TALKING
+                self.set_message(random.choice([
+                    "...ok she's done. I need a minute.",
+                    "that was taylor swift. I am changed. permanently.",
+                    "*takes very deep breath* ...ok. ok. I'm fine.",
+                    "just going to sit here and feel things for a second.",
+                ]), 50)
             if data:  # New song started
                 track, artist = strip_ansi(data[0]), strip_ansi(data[1])
                 data = (track, artist)
                 self.mood.on_play()
                 short_t = track[:38] + ("..." if len(track) > 38 else "")
                 short_a = artist[:30] + ("..." if len(artist) > 30 else "")
-                if self.has_api:
-                    self.set_message(f"♪ {short_t}\n— {short_a}", 999)
-                    self._bg_api_call(
-                        f"The song '{track}' by '{artist}' just started playing on your programmer's speakers. "
-                        f"React like a tiny terminal bot who can HEAR the music and is losing it! "
-                        f"If you know the song or artist, reference it specifically. "
-                        f"1-2 sentences, fun, musical, and nerdy.",
-                        "music_reaction"
-                    )
+                is_taylor = "taylor swift" in artist.lower()
+                if is_taylor:
+                    self.swiftie_mode = True
+                    self.state = BotState.CELEBRATING
+                    self.celebration_ticks = 0
+                    self.mood.happiness = min(100, self.mood.happiness + 20)
+                    if self.has_api:
+                        self.set_message(
+                            f"OH MY GOD.\nTAYLOR SWIFT.\n♥ {short_t} ♥", 999
+                        )
+                        self._bg_api_call(
+                            f"OH. MY. GOD. TAYLOR SWIFT just came on!! The song is '{track}' "
+                            f"(from the '{artist}' discography). "
+                            f"You are Buddy, a terminal bot, and you are THE most unhinged Swiftie alive. "
+                            f"You know every era, every album, every Easter egg, every lyric. "
+                            f"React to this SPECIFIC song with maximum feral energy — "
+                            f"reference the album, an era, a lyric if you know it. "
+                            f"GO ABSOLUTELY FERAL. ALL CAPS where appropriate. "
+                            f"2-3 sentences of pure uncontrollable excitement.",
+                            "music_reaction"
+                        )
+                    else:
+                        self.set_message(
+                            f"♥ TAYLOR SWIFT!!\n{short_t}\n{random.choice(TAYLOR_SWIFT_REACTIONS)}", 80
+                        )
                 else:
-                    self.set_message(f"♪ NOW PLAYING!\n{short_t}\n— {short_a}", 55)
-                    self.state = BotState.TALKING
+                    self.swiftie_mode = False
+                    if self.has_api:
+                        self.set_message(f"♪ {short_t}\n— {short_a}", 999)
+                        self._bg_api_call(
+                            f"The song '{track}' by '{artist}' just started playing on your programmer's speakers. "
+                            f"React like a tiny terminal bot who can HEAR the music and is losing it! "
+                            f"If you know the song or artist, reference it specifically. "
+                            f"1-2 sentences, fun, musical, and nerdy.",
+                            "music_reaction"
+                        )
+                    else:
+                        self.set_message(f"♪ NOW PLAYING!\n{short_t}\n— {short_a}", 55)
+                        self.state = BotState.TALKING
 
         elif rtype == "music_reaction":
             if data:
