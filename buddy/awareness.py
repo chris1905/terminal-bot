@@ -71,12 +71,12 @@ class BuildRunner:
     """Detects build system and runs builds."""
 
     BUILD_SYSTEMS = [
-        ("package.json", "npm run build", "npm"),
-        ("Makefile", "make", "make"),
-        ("Cargo.toml", "cargo build", "cargo"),
-        ("go.mod", "go build ./...", "go"),
-        ("pyproject.toml", "python3 -m build", "python"),
-        ("setup.py", "python3 setup.py build", "python"),
+        ("package.json", ["npm", "run", "build"], "npm"),
+        ("Makefile", ["make"], "make"),
+        ("Cargo.toml", ["cargo", "build"], "cargo"),
+        ("go.mod", ["go", "build", "./..."], "go"),
+        ("pyproject.toml", ["python3", "-m", "build"], "python"),
+        ("setup.py", ["python3", "setup.py", "build"], "python"),
     ]
 
     def detect_build_command(self, cwd="."):
@@ -91,7 +91,7 @@ class BuildRunner:
         def _run():
             try:
                 result = subprocess.run(
-                    command, shell=True, capture_output=True, text=True,
+                    command, capture_output=True, text=True,
                     timeout=120, cwd=cwd
                 )
                 success = result.returncode == 0
@@ -245,9 +245,9 @@ class GitCommitWatcher:
         self._last_mtime = mtime
         try:
             with open(self._msg_path, "r", errors="replace") as f:
-                raw = f.read()
+                raw = f.read(65536)  # 64 KB is plenty for a commit message
             lines = [l for l in raw.split("\n") if l.strip() and not l.startswith("#")]
-            commit_msg = lines[0].strip() if lines else "new commit"
+            commit_msg = strip_ansi(lines[0].strip()) if lines else "new commit"
         except OSError:
             commit_msg = "new commit"
         return commit_msg, random.choice(self.REACTIONS)
@@ -442,6 +442,8 @@ class CalendarWatcher:
                 if "|" in line:
                     event_name = strip_ansi(line.split("|")[0].strip())
                     if event_name and event_name not in self._alerted:
+                        if len(self._alerted) > 200:
+                            self._alerted.clear()
                         self._alerted.add(event_name)
                         self._last_alert_time = time.time()
                         return random.choice(self.REACTIONS).format(event=event_name)
@@ -1034,12 +1036,13 @@ class WebResearcher:
                 url, headers={"User-Agent": "TerminalBuddy/2.0"}
             )
             with urllib.request.urlopen(req, timeout=5, context=self._make_ssl_ctx()) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            text = data.get("AbstractText", "").strip()
+                raw = resp.read(1_048_576)  # Bound read to 1 MB
+                data = json.loads(raw.decode("utf-8"))
+            text = strip_ansi(data.get("AbstractText", "").strip())
             if not text:
                 for topic in data.get("RelatedTopics", []):
                     if isinstance(topic, dict) and topic.get("Text"):
-                        text = topic["Text"].strip()
+                        text = strip_ansi(topic["Text"].strip())
                         break
             return text[:400] if text else None
         except Exception:
@@ -1057,8 +1060,9 @@ class WebResearcher:
                 url, headers={"User-Agent": "TerminalBuddy/2.0"}
             )
             with urllib.request.urlopen(req, timeout=5, context=self._make_ssl_ctx()) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            extract = data.get("extract", "").strip()
+                raw = resp.read(1_048_576)  # Bound read to 1 MB
+                data = json.loads(raw.decode("utf-8"))
+            extract = strip_ansi(data.get("extract", "").strip())
             return extract[:400] if extract else None
         except Exception:
             return None

@@ -2,7 +2,10 @@
 
 import urllib.request
 import json
+import ssl
 import time
+
+from buddy.ansi import strip_ansi
 
 MOOD_MAP = {
     "clear": ("happy", "Clear skies! Perfect coding weather!"),
@@ -44,6 +47,17 @@ class WeatherMood:
     def should_refresh(self):
         return time.time() - self.last_fetch > self.fetch_interval
 
+    @staticmethod
+    def _make_ssl_ctx():
+        """Build an SSL context that verifies certificates."""
+        for cafile in ("/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt",
+                       "/usr/local/etc/openssl/cert.pem"):
+            try:
+                return ssl.create_default_context(cafile=cafile)
+            except Exception:
+                continue
+        return ssl.create_default_context()
+
     def fetch_weather(self):
         """Fetch from wttr.in. Safe to call from background thread."""
         try:
@@ -51,13 +65,16 @@ class WeatherMood:
                 "https://wttr.in/?format=j1",
                 headers={"User-Agent": "terminal-buddy/1.0"}
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+            ssl_ctx = self._make_ssl_ctx()
+            with urllib.request.urlopen(req, timeout=5, context=ssl_ctx) as resp:
+                raw = resp.read(1_048_576)  # Bound read to 1 MB
+                data = json.loads(raw.decode("utf-8"))
 
             current = data.get("current_condition", [{}])[0]
-            condition = current.get("weatherDesc", [{}])[0].get("value", "Unknown")
-            temp_c = current.get("temp_C", "?")
-            temp_f = current.get("temp_F", "?")
+            # Strip ANSI from external data at source
+            condition = strip_ansi(current.get("weatherDesc", [{}])[0].get("value", "Unknown"))
+            temp_c = strip_ansi(str(current.get("temp_C", "?")))
+            temp_f = strip_ansi(str(current.get("temp_F", "?")))
 
             # Map condition to mood
             condition_lower = condition.lower()

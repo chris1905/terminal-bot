@@ -163,8 +163,11 @@ class AnthropicChat:
                 self.api_url, data=payload, headers=headers, method="POST"
             )
             with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read(1_048_576)  # Bound read to 1 MB
+                data = json.loads(raw.decode("utf-8"))
                 text = data["content"][0]["text"]
+                # Strip ANSI from API response before display (defense-in-depth)
+                text = strip_ansi(text)
                 if messages is self.conversation:
                     self.conversation.append({"role": "assistant", "content": text})
                 return text

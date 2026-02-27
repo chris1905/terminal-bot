@@ -135,7 +135,16 @@ class C:
 
 
 # ─── Security: strip ANSI from untrusted external data ─────────────────────
-_ANSI_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))')
+_ANSI_RE = re.compile(
+    r'(?:\x1b(?:'
+    r'\[[0-?]*[ -/]*[@-~]'               # CSI sequences (must be before Fe)
+    r'|\][^\x07\x1b]*(?:\x07|\x1b\\)'    # OSC sequences (must be before Fe)
+    r'|[P_^][^\x1b]*\x1b\\'              # DCS, APC, PM sequences (payload + ST)
+    r'|[@-Z\\-_]'                         # Fe escape sequences (single char fallback)
+    r')'
+    r'|[\x80-\x9f]'                       # 8-bit C1 control chars
+    r')'
+)
 
 
 def strip_ansi(text):

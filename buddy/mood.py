@@ -2,6 +2,7 @@
 
 import json
 import os
+import tempfile
 import time
 
 STATE_DIR = os.path.expanduser("~/.terminal-buddy")
@@ -52,8 +53,18 @@ class Mood:
                 "total_interactions": self.total_interactions,
                 "last_save": time.time(),
             }
-            with open(STATE_FILE, "w") as f:
-                json.dump(data, f)
+            # Atomic write: tmp file + os.replace to avoid corruption on crash
+            fd, tmp_path = tempfile.mkstemp(dir=STATE_DIR, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f)
+                os.replace(tmp_path, STATE_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception:
             pass
 
