@@ -1,5 +1,7 @@
 """ANSI escape code helpers and color palette."""
 
+import re
+
 ESC = "\033["
 HIDE_CURSOR = f"{ESC}?25l"
 SHOW_CURSOR = f"{ESC}?25h"
@@ -130,3 +132,12 @@ class C:
     ALIEN      = fg(100, 255, 150)
     SKELETON   = fg(220, 220, 230)
     PUMPKIN    = fg(255, 140, 30)
+
+
+# ─── Security: strip ANSI from untrusted external data ─────────────────────
+_ANSI_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))')
+
+
+def strip_ansi(text):
+    """Remove ANSI/VT escape sequences from untrusted external strings."""
+    return _ANSI_RE.sub('', text) if text else text

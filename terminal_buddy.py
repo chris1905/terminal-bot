@@ -29,7 +29,7 @@ import re
 from buddy.ansi import (
     ESC, HIDE_CURSOR, SHOW_CURSOR, CLEAR_SCREEN, ERASE_LINE,
     ALT_SCREEN_ON, ALT_SCREEN_OFF, RESET, BOLD, DIM,
-    fg, bg, move, C
+    fg, bg, move, C, strip_ansi
 )
 from buddy.data import (
     MOTIVATIONAL, JOKES, GREETINGS_MORNING, GREETINGS_AFTERNOON,
@@ -45,7 +45,9 @@ from buddy.ai_features import (
 from buddy.awareness import (
     ShellHistoryWatcher, BuildRunner, UptimeTracker,
     GitStreakTracker, ClipboardWatcher, GitCommitWatcher, WebResearcher,
-    MusicWatcher,
+    MusicWatcher, CalendarWatcher, BatteryWatcher, ScreenTimeTracker,
+    ActiveAppWatcher, MeetingDetector, SystemLoadWatcher, AppearanceWatcher,
+    WiFiWatcher, TypingSpeedTracker, USBWatcher,
 )
 from buddy.games import TypingRace, TriviaGame, PomodoroTimer
 from buddy.productivity import scan_todos, format_todo_report, check_pending_prs
@@ -179,11 +181,7 @@ class AnthropicChat:
 
 # ─── Security helpers ────────────────────────────────────────────────────────
 
-_ANSI_ESCAPE_RE = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))')
-
-def strip_ansi(text):
-    """Remove ANSI/VT escape sequences from untrusted external strings."""
-    return _ANSI_ESCAPE_RE.sub('', text) if text else text
+# strip_ansi() imported from buddy.ansi
 
 
 # ─── Local response engine ───────────────────────────────────────────────────
@@ -202,21 +200,25 @@ import math
 
 # ─── Bot body ─────────────────────────────────────────────────────────────
 #
-# Grid (all lines 16 visible chars, inner body = 11):
+# Grid (all lines 16 visible chars at head, inner body = 11):
 #
 #          ┃                 col 10 — antenna stalk
 #       ╭──◆──╮              cols 7-13 (7 wide) — antenna head
-#    ╭──┘     └──╮           cols 5-15 (11+2=13 wide) — head top
+#    ╭──┘     └──╮           cols 5-15 (13 wide) — head top
+#    │           │           11 inner — forehead
 #    │  (●)  (●) │           11 inner — eyes (each eye = 3 chars)
 #    │           │           11 inner — spacer
 #    │   ╰───╯   │           11 inner — mouth (5 chars, centered)
 #    ╰──┬─────┬──╯           cols 5-15 — chin
 #       │ ░◆░ │              cols 8-12 — chest panel
-#       ╰─────╯              cols 8-12 — base
-#        ░░░░░               shadow
+#       │     │              cols 8-12 — torso
+#       ╰──┬──╯              cols 8-12 — hip
+#        ╱   ╲               legs
+#       ░░░░░░░              shadow (wider)
 
 def make_body(left_eye, right_eye, mouth, led_color=None, breath_phase=0,
-              left_arm="", right_arm="", panel_char="◆", inner_text=None):
+              left_arm="", right_arm="", panel_char="◆", inner_text=None,
+              legs=None):
     """Build the bot. Every eye=3 chars, mouth=5 chars, inner=11."""
     if led_color is None:
         led_color = C.LED_IDLE
@@ -231,17 +233,25 @@ def make_body(left_eye, right_eye, mouth, led_color=None, breath_phase=0,
     else:
         inner_row = f"   {bc}│           │{RESET}"
 
+    if legs is None:
+        legs_str = Legs.STAND
+    else:
+        legs_str = legs
+
     return [
-        f"         {bd}┃{RESET}",
-        f"      {bc}╭──{led_color}◆{RESET}{bc}──╮{RESET}",
-        f"   {bc}╭──┘     └──╮{RESET}",
-        f"   {bc}│{RESET} {left_eye}   {right_eye} {bc}│{RESET}",
-        inner_row,
-        f"   {bc}│{RESET}   {mouth}   {bc}│{RESET}",
-        f"   {bc}╰──┬─────┬──╯{RESET}",
-        f"  {left_arm} {bd}│{C.PANEL} ░{panel_char}░ {bd}│{RESET} {right_arm}",
-        f"      {bd}╰─────╯{RESET}",
-        f"       {C.SHADOW}░░░░░{RESET}",
+        f"         {bd}┃{RESET}",                                                      # 0  antenna stalk
+        f"      {bc}╭──{led_color}◆{RESET}{bc}──╮{RESET}",                            # 1  antenna head
+        f"   {bc}╭──┘     └──╮{RESET}",                                                # 2  head top
+        f"   {bc}│           │{RESET}",                                                 # 3  forehead
+        f"   {bc}│{RESET} {left_eye}   {right_eye} {bc}│{RESET}",                      # 4  eyes
+        inner_row,                                                                      # 5  inner text
+        f"   {bc}│{RESET}   {mouth}   {bc}│{RESET}",                                   # 6  mouth
+        f"   {bc}╰──┬─────┬──╯{RESET}",                                                # 7  chin
+        f"  {left_arm} {bd}│{C.PANEL} ░{panel_char}░ {bd}│{RESET} {right_arm}",        # 8  chest
+        f"      {bd}│     │{RESET}",                                                    # 9  torso
+        f"      {bd}╰──┬──╯{RESET}",                                                   # 10 hip
+        legs_str,                                                                       # 11 legs
+        f"      {C.SHADOW}░░░░░░░{RESET}",                                             # 12 shadow
     ]
 
 
@@ -354,6 +364,145 @@ class Arms:
     SLEEP_R  = f"    "
     UMBRELLA_L = f"  {C.ACCENT}∩╮{RESET}"  # holding umbrella (rainy day)
     UMBRELLA_R = f"{C.ACCENT}╭∩{RESET}  "
+
+    # ─── Genre-specific dance arms ──────────────────────────────────────
+    # Rock: fist pump (both arms up together, slam down)
+    ROCK_L  = [f" {C.FIRE}╱{RESET}  ", f" {C.FIRE}║{RESET}  ", f"  {C.FIRE}╲{RESET} ", f" {C.FIRE}╱{RESET}  "]
+    ROCK_R  = [f"  {C.FIRE}╲{RESET} ", f"  {C.FIRE}║{RESET} ", f" {C.FIRE}╱{RESET}  ", f"  {C.FIRE}╲{RESET} "]
+    # Electronic: rave hands (rapid alternating with sparkle)
+    RAVE_L  = [f" {C.PARTY}╋{RESET}  ", f"  {C.STAR}✦{RESET} ", f" {C.CYAN}╱{RESET}  ", f"  {C.STAR}✦{RESET} "]
+    RAVE_R  = [f"  {C.PARTY}╋{RESET} ", f" {C.STAR}✦{RESET}  ", f"  {C.CYAN}╲{RESET} ", f" {C.STAR}✦{RESET}  "]
+    # Hip-hop: smooth asymmetric lean
+    HIPHOP_L = [f"  {C.ACCENT}╲{RESET} ", f"  {C.ACCENT}─{RESET} ", f"  {C.ACCENT}╱{RESET} ", f"  {C.ACCENT}─{RESET} "]
+    HIPHOP_R = [f" {C.ACCENT}─{RESET}  ", f" {C.ACCENT}╲{RESET}  ", f" {C.ACCENT}─{RESET}  ", f" {C.ACCENT}╱{RESET}  "]
+    # Metal: windmill headbang (intense flailing)
+    METAL_L = [f" {C.FIRE}╲{RESET}  ", f" {C.FIRE}╱{RESET}  ", f" {C.FIRE}╲{RESET}  ", f" {C.FIRE}║{RESET}  "]
+    METAL_R = [f"  {C.FIRE}╱{RESET} ", f"  {C.FIRE}╲{RESET} ", f"  {C.FIRE}╱{RESET} ", f"  {C.FIRE}║{RESET} "]
+    # Jazz: elegant smooth flow
+    JAZZ_L  = [f"  {C.STAR}∼{RESET} ", f" {C.STAR}╱{RESET}  ", f"  {C.STAR}∼{RESET} ", f" {C.STAR}╲{RESET}  "]
+    JAZZ_R  = [f" {C.STAR}∼{RESET}  ", f"  {C.STAR}╲{RESET} ", f" {C.STAR}∼{RESET}  ", f"  {C.STAR}╱{RESET} "]
+
+
+class Legs:
+    """Leg strings for the bot's lower body."""
+    STAND   = f"       {C.BODY_DARK}╱   ╲{RESET}"
+    SLEEP   = f"       {C.ZZZ}╱   ╲{RESET}"
+    # Pop: playful side-to-side
+    POP     = [f"       {C.PARTY}╱   ╲{RESET}",
+               f"      {C.PARTY}╱     ╲{RESET}",
+               f"       {C.PARTY}╱   ╲{RESET}",
+               f"        {C.PARTY}╱ ╲{RESET}  "]
+    # Rock: stomping
+    ROCK    = [f"       {C.FIRE}╱   ╲{RESET}",
+               f"       {C.FIRE}╱   │{RESET}",
+               f"       {C.FIRE}╱   ╲{RESET}",
+               f"       {C.FIRE}│   ╲{RESET}"]
+    # Electronic: rapid shuffle
+    RAVE    = [f"       {C.CYAN}╱   ╲{RESET}",
+               f"       {C.PARTY}╳   ╳{RESET}",
+               f"       {C.CYAN}╲   ╱{RESET}",
+               f"       {C.PARTY}╳   ╳{RESET}"]
+    # Hip-hop: smooth lean
+    HIPHOP  = [f"       {C.ACCENT}╱   ╲{RESET}",
+               f"      {C.ACCENT}╱   ╲{RESET} ",
+               f"       {C.ACCENT}╱   ╲{RESET}",
+               f"        {C.ACCENT}╱   ╲{RESET}"]
+    # Metal: wide power stance
+    METAL   = [f"      {C.FIRE}╱     ╲{RESET}",
+               f"      {C.FIRE}╱     │{RESET}",
+               f"      {C.FIRE}╱     ╲{RESET}",
+               f"      {C.FIRE}│     ╲{RESET}"]
+    # Jazz: elegant crossover
+    JAZZ    = [f"       {C.STAR}╱   ╲{RESET}",
+               f"       {C.STAR}│   ╱{RESET}",
+               f"       {C.STAR}╱   ╲{RESET}",
+               f"       {C.STAR}╲   │{RESET}"]
+
+
+# ─── Dance style definitions ────────────────────────────────────────────────
+# Each style has horizontal + vertical patterns, arm/leg references, and speed.
+
+DANCE_STYLES = {
+    "pop": {
+        "h_pattern": [0, 1, 2, 3, 2, 1, 0, -1, -2, -3, -2, -1],
+        "v_pattern": [0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1],
+        "arms": (Arms.DANCE_L, Arms.DANCE_R),
+        "legs": Legs.POP,
+        "speed": 2,
+    },
+    "rock": {
+        "h_pattern": [0, 0, 1, 0, 0, 0, -1, 0],
+        "v_pattern": [0, -1, -3, -1, 0, 1, 0, -1],
+        "arms": (Arms.ROCK_L, Arms.ROCK_R),
+        "legs": Legs.ROCK,
+        "speed": 1,
+    },
+    "electronic": {
+        "h_pattern": [-2, -1, 0, 1, 2, 1, 0, -1],
+        "v_pattern": [0, -1, -2, -1, 0, -1, -2, -1],
+        "arms": (Arms.RAVE_L, Arms.RAVE_R),
+        "legs": Legs.RAVE,
+        "speed": 1,
+    },
+    "hiphop": {
+        "h_pattern": [0, 1, 2, 2, 2, 1, 0, -1, -2, -2, -2, -1],
+        "v_pattern": [0, 0, 0, -1, 0, 0, 0, 0, 0, -1, 0, 0],
+        "arms": (Arms.HIPHOP_L, Arms.HIPHOP_R),
+        "legs": Legs.HIPHOP,
+        "speed": 2,
+    },
+    "metal": {
+        "h_pattern": [-1, 0, 1, 0, -1, 0, 1, 0],
+        "v_pattern": [0, -2, -4, -2, 0, -2, -4, -2],
+        "arms": (Arms.METAL_L, Arms.METAL_R),
+        "legs": Legs.METAL,
+        "speed": 1,
+    },
+    "jazz": {
+        "h_pattern": [0, 1, 2, 2, 1, 0, -1, -2, -2, -1],
+        "v_pattern": [0, 0, -1, 0, 0, 0, 0, -1, 0, 0],
+        "arms": (Arms.JAZZ_L, Arms.JAZZ_R),
+        "legs": Legs.JAZZ,
+        "speed": 3,
+    },
+    "default": {
+        "h_pattern": [0, 2, 4, 2, 0, -2, -4, -2],
+        "v_pattern": [0, -1, 0, -1, 0, -1, 0, -1],
+        "arms": (Arms.DANCE_L, Arms.DANCE_R),
+        "legs": Legs.POP,
+        "speed": 2,
+    },
+}
+
+# Map Apple Music genre strings to dance style keys
+GENRE_TO_STYLE = {
+    "rock": "rock", "alternative": "rock", "punk": "rock", "indie": "rock",
+    "grunge": "rock", "alt-rock": "rock",
+    "metal": "metal", "heavy metal": "metal", "hard rock": "metal",
+    "death metal": "metal", "thrash": "metal",
+    "pop": "pop", "k-pop": "pop", "j-pop": "pop", "country": "pop",
+    "latin": "pop", "reggaeton": "pop", "singer/songwriter": "pop",
+    "dance": "electronic", "electronic": "electronic", "edm": "electronic",
+    "house": "electronic", "techno": "electronic", "trance": "electronic",
+    "drum & bass": "electronic", "dubstep": "electronic", "ambient": "electronic",
+    "hip-hop": "hiphop", "hip hop": "hiphop", "hip-hop/rap": "hiphop",
+    "rap": "hiphop", "r&b": "hiphop", "r&b/soul": "hiphop", "reggae": "hiphop",
+    "trap": "hiphop",
+    "jazz": "jazz", "soul": "jazz", "blues": "jazz", "classical": "jazz",
+    "folk": "jazz", "bossa nova": "jazz", "lounge": "jazz", "easy listening": "jazz",
+}
+
+
+def _genre_to_style(genre_str):
+    """Map a genre string from Apple Music to a dance style key."""
+    g = genre_str.lower().strip()
+    if g in GENRE_TO_STYLE:
+        return GENRE_TO_STYLE[g]
+    # Fuzzy fallback: check if any key is contained in the genre string
+    for key, style in GENRE_TO_STYLE.items():
+        if key in g:
+            return style
+    return "default"
 
 
 # ─── Speech bubble ───────────────────────────────────────────────────────────
@@ -607,6 +756,21 @@ class TerminalBuddy:
         self.music_watcher = MusicWatcher()
         self.music_playing = False
         self.swiftie_mode = False
+        self.music_genre = ""
+        self.dance_style = "default"
+
+        # New awareness watchers
+        self.calendar_watcher = CalendarWatcher()
+        self.battery_watcher = BatteryWatcher()
+        self.screen_time = ScreenTimeTracker()
+        self.active_app_watcher = ActiveAppWatcher()
+        self.meeting_detector = MeetingDetector()
+        self.system_load = SystemLoadWatcher()
+        self.appearance_watcher = AppearanceWatcher()
+        self.wifi_watcher = WiFiWatcher()
+        self.typing_speed = TypingSpeedTracker()
+        self.usb_watcher = USBWatcher()
+        self.in_meeting = False  # quiet mode flag
 
         # Typewriter effect
         self.typewriter_pos = 9999  # Current reveal position; starts at full for existing msgs
@@ -727,8 +891,22 @@ class TerminalBuddy:
         elif s == BotState.COFFEE:
             return Eyes.HAPPY_L, Eyes.HAPPY_R
         elif s == BotState.DANCING:
-            return [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.STAR_L, Eyes.STAR_R),
-                    (Eyes.DIZZY_L, Eyes.DIZZY_R), (Eyes.SPARKLE_L, Eyes.SPARKLE_R)][self.dance_frame % 4]
+            _dance_eyes = {
+                "rock":       [(Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.DIZZY_L, Eyes.DIZZY_R),
+                               (Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.STAR_L, Eyes.STAR_R)],
+                "metal":      [(Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.DIZZY_L, Eyes.DIZZY_R),
+                               (Eyes.WIDE_L, Eyes.WIDE_R), (Eyes.DIZZY_L, Eyes.DIZZY_R)],
+                "electronic": [(Eyes.STAR_L, Eyes.STAR_R), (Eyes.SPARKLE_L, Eyes.SPARKLE_R),
+                               (Eyes.DIZZY_L, Eyes.DIZZY_R), (Eyes.STAR_L, Eyes.STAR_R)],
+                "hiphop":     [(Eyes.COOL_L, Eyes.COOL_R), (Eyes.HAPPY_L, Eyes.HAPPY_R),
+                               (Eyes.COOL_L, Eyes.COOL_R), (Eyes.OPEN_L, Eyes.OPEN_R)],
+                "jazz":       [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.OPEN_L, Eyes.OPEN_R),
+                               (Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.LOOK_UP_L, Eyes.LOOK_UP_R)],
+            }
+            eye_frames = _dance_eyes.get(self.dance_style,
+                         [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.STAR_L, Eyes.STAR_R),
+                          (Eyes.DIZZY_L, Eyes.DIZZY_R), (Eyes.SPARKLE_L, Eyes.SPARKLE_R)])
+            return eye_frames[self.dance_frame % len(eye_frames)]
         elif s == BotState.PROCESSING:
             return [(Eyes.THINK_L, Eyes.THINK_R), (Eyes.LOOK_UP_L, Eyes.LOOK_UP_R),
                     (Eyes.THINK_L, Eyes.THINK_R), (Eyes.LOOK_R_L, Eyes.LOOK_R_R)][self.tick % 4]
@@ -821,7 +999,17 @@ class TerminalBuddy:
         if s == BotState.SLEEPING: return Mouths.SLEEP
         elif s == BotState.CELEBRATING: return [Mouths.GRIN, Mouths.EXCITED, Mouths.GRIN][self.tick % 3]
         elif s == BotState.COFFEE: return Mouths.COFFEE
-        elif s == BotState.DANCING: return [Mouths.GRIN, Mouths.EXCITED, Mouths.GRIN, Mouths.OPEN][self.dance_frame % 4]
+        elif s == BotState.DANCING:
+            _dance_mouths = {
+                "rock":       [Mouths.OPEN, Mouths.GRIN, Mouths.OPEN, Mouths.EXCITED],
+                "metal":      [Mouths.OPEN, Mouths.YAWN, Mouths.OPEN, Mouths.EXCITED],
+                "electronic": [Mouths.EXCITED, Mouths.GRIN, Mouths.OPEN, Mouths.GRIN],
+                "hiphop":     [Mouths.SMIRK, Mouths.GRIN, Mouths.SMIRK, Mouths.SMALL],
+                "jazz":       [Mouths.WHISTLE, Mouths.SMILE, Mouths.SING, Mouths.SMILE],
+            }
+            mouth_frames = _dance_mouths.get(self.dance_style,
+                           [Mouths.GRIN, Mouths.EXCITED, Mouths.GRIN, Mouths.OPEN])
+            return mouth_frames[self.dance_frame % len(mouth_frames)]
         elif s == BotState.TALKING: return [Mouths.TALK1, Mouths.TALK2, Mouths.TALK1, Mouths.SMALL][self.tick % 4]
         elif s == BotState.PROCESSING: return [Mouths.THINK, Mouths.SMALL][self.tick % 2]
         elif s == BotState.BUILDING: return [Mouths.SMALL, Mouths.OPEN][self.tick % 2]
@@ -844,11 +1032,17 @@ class TerminalBuddy:
             return Mouths.SMILE
 
     def get_dance_offset(self):
-        if self.state != BotState.DANCING:
-            if self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
-                return 0  # bounce handled via row offset
-            return 0
-        return [0, 2, 4, 2, 0, -2, -4, -2][self.dance_frame % 8]
+        if self.state == BotState.DANCING:
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            pattern = style["h_pattern"]
+            return pattern[self.dance_frame % len(pattern)]
+        if self.music_playing and self.state == BotState.IDLE:
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            pattern = style["h_pattern"]
+            speed = style.get("speed", 2)
+            f = (self.tick // (speed * 2)) % len(pattern)
+            return pattern[f] // 2  # gentle sway when idle
+        return 0
 
     def get_led_color(self):
         """Antenna LED color based on state and mood."""
@@ -875,12 +1069,30 @@ class TerminalBuddy:
         if mood_face in ("sad", "lonely"): return C.LED_SLEEP
         return C.LED_IDLE if pulse > 0.3 else C.BODY_DARK
 
+    def get_legs(self):
+        """Get current leg string based on state and dance style."""
+        if self.state == BotState.SLEEPING:
+            return Legs.SLEEP
+        if self.state == BotState.DANCING:
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            leg_frames = style["legs"]
+            return leg_frames[self.dance_frame % len(leg_frames)]
+        if self.swiftie_mode:
+            return Legs.POP[(self.tick // 2) % len(Legs.POP)]
+        if self.music_playing and self.state == BotState.IDLE:
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            leg_frames = style["legs"]
+            return leg_frames[(self.tick // 4) % len(leg_frames)]
+        return Legs.STAND
+
     def get_arms(self):
         """Get current arm strings based on state."""
         s = self.state
         if s == BotState.DANCING:
-            f = self.dance_frame % 4
-            return Arms.DANCE_L[f], Arms.DANCE_R[f]
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            arms_l, arms_r = style["arms"]
+            f = self.dance_frame % len(arms_l)
+            return arms_l[f], arms_r[f]
         if s == BotState.CELEBRATING:
             return Arms.CHEER_L, Arms.CHEER_R
         if s == BotState.SLEEPING:
@@ -912,10 +1124,12 @@ class TerminalBuddy:
         if self.swiftie_mode:
             f = (self.tick // 2) % 4
             return Arms.DANCE_L[f], Arms.DANCE_R[f]
-        # Music — sway to the beat
+        # Music — sway to the beat with genre-appropriate arms
         if self.state == BotState.IDLE and self.music_playing:
-            f = (self.tick // 4) % 4
-            return Arms.DANCE_L[f], Arms.DANCE_R[f]
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            arms_l, arms_r = style["arms"]
+            f = (self.tick // 4) % len(arms_l)
+            return arms_l[f], arms_r[f]
         return Arms.REST_L, Arms.REST_R
 
     def get_panel_char(self):
@@ -969,8 +1183,11 @@ class TerminalBuddy:
         # ─── Title bar (gradient line) ──────────────────────
         title_text = "TERMINAL BUDDY"
         api_tag = f" {C.GREEN}● AI{RESET}" if self.has_api else ""
+        style_icons = {"rock": "🎸", "metal": "🤘", "electronic": "🎧", "hiphop": "🎤",
+                       "jazz": "🎷", "pop": "🎵", "default": "♪"}
+        _si = style_icons.get(self.dance_style, "♪") if self.music_playing else ""
         music_tag = (f" {C.HEART}♥ SWIFTIE MODE ♥{RESET}" if self.swiftie_mode
-                     else f" {C.PARTY}♪{RESET}" if self.music_playing else "")
+                     else f" {C.PARTY}{_si}{RESET}" if self.music_playing else "")
         mood_text = self.mood.get_status_text()
         # Build gradient title
         grad_left = f"{C.BODY_DARK}{'━' * 3}{RESET}"
@@ -1022,13 +1239,19 @@ class TerminalBuddy:
         led = self.get_led_color()
         panel = self.get_panel_char()
         inner = self._get_inner_text()
+        legs = self.get_legs()
         body = make_body(left_eye, right_eye, mouth, led_color=led,
                          breath_phase=self.breath_phase,
                          left_arm=left_arm, right_arm=right_arm,
-                         panel_char=panel, inner_text=inner)
+                         panel_char=panel, inner_text=inner,
+                         legs=legs)
         dance_offset = self.get_dance_offset()
-        # Bounce fidget: shift body up by 1
-        if self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
+        # Bounce: vertical offset varies by state and genre
+        if self.state == BotState.DANCING:
+            style = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"])
+            v_pat = style["v_pattern"]
+            bounce_offset = v_pat[self.dance_frame % len(v_pat)]
+        elif self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
             bounce_offset = -1
         elif self.fidget_type == "nod" and self.fidget_frame % 2 == 0 and self.fidget_frame < 6:
             bounce_offset = -1
@@ -1152,15 +1375,31 @@ class TerminalBuddy:
         weather_str = ""
         if self.weather.current:
             w = self.weather.current
-            weather_str = f" {DIM}│{RESET} {DIM}{w['condition']} {w['temp_c']}°C{RESET}"
+            w_cond = strip_ansi(str(w.get('condition', '')))
+            w_temp = strip_ansi(str(w.get('temp_c', '')))
+            weather_str = f" {DIM}│{RESET} {DIM}{w_cond} {w_temp}°C{RESET}"
         ach_summary = self.achievements.get_summary()
         pomo_str = ""
         if self.pomodoro.active:
             pomo_str = f" {DIM}│{RESET} {C.FIRE}◴ {self.pomodoro.remaining()}{RESET}"
         music_str = ""
         if self.music_playing and self.music_watcher.current_track:
-            t = self.music_watcher.current_track[:22]
+            t = strip_ansi(self.music_watcher.current_track)[:22]
             music_str = f" {DIM}│{RESET} {C.PARTY}♪{RESET} {DIM}{t}{RESET}"
+
+        # Battery indicator (compact)
+        batt_str = ""
+        if self.battery_watcher._last_state:
+            pct, charging = self.battery_watcher._last_state
+            if pct <= 20:
+                batt_str = f" {DIM}│{RESET} {C.RED}⚡{pct}%{RESET}"
+            elif charging:
+                batt_str = f" {DIM}│{RESET} {C.GREEN}⚡{pct}%{RESET}"
+
+        # Meeting indicator
+        mtg_str = ""
+        if self.in_meeting:
+            mtg_str = f" {DIM}│{RESET} {C.RED}🔇 Meeting{RESET}"
 
         # Mood mini-bar
         mood_bar = self.mood.get_bar()
@@ -1170,7 +1409,7 @@ class TerminalBuddy:
         return (f"{ERASE_LINE}{bg(20, 22, 35)} {api_status} AI"
                 f" {DIM}│{RESET} {DIM}⏱{RESET} {uptime_str}"
                 f" {DIM}│{RESET} {DIM}{streak}{RESET}"
-                f"{weather_str}{pomo_str}{music_str}"
+                f"{weather_str}{pomo_str}{music_str}{batt_str}{mtg_str}"
                 f" {DIM}│{RESET} {mood_color}{mood_bar}{RESET}"
                 f" {DIM}│{RESET} {DIM}🏆{RESET}{ach_summary}"
                 f"{RESET}")
@@ -1298,9 +1537,20 @@ class TerminalBuddy:
     def trigger_dance(self):
         self.state = BotState.DANCING
         self.dance_frame = 0
+        # Pick a random style if no music is setting one
+        if not self.music_playing:
+            self.dance_style = random.choice(["pop", "rock", "electronic", "hiphop", "jazz"])
         self.achievements.unlock("first_dance")
         self.mood.on_play()
-        self.set_message(random.choice(["Watch my moves!", "Dance break!", "Dropping beats, not bugs!", "Every commit deserves a dance!"]), 50)
+        style_names = {"pop": "Pop", "rock": "Rock", "electronic": "Rave", "hiphop": "Hip-Hop",
+                       "metal": "Metal", "jazz": "Jazz", "default": "Freestyle"}
+        style_label = style_names.get(self.dance_style, "Freestyle")
+        self.set_message(random.choice([
+            f"Watch my {style_label} moves!",
+            f"Dance break! [{style_label} mode]",
+            "Dropping beats, not bugs!",
+            "Every commit deserves a dance!",
+        ]), 50)
 
     def trigger_coffee(self):
         self.state = BotState.COFFEE
@@ -1508,7 +1758,7 @@ class TerminalBuddy:
                 self.next_fidget = now + random.uniform(10.0, 25.0)
             elif self.fidget_type == "sneeze" and self.fidget_frame == 5 and not self.message:
                 self.set_message("*ACHOO!*", 12)  # Sneeze burst!
-        elif self.state == BotState.IDLE and now >= self.next_fidget:
+        elif self.state == BotState.IDLE and now >= self.next_fidget and not self.in_meeting:
             # Build weather-biased fidget pool
             _pool = list(IDLE_FIDGETS)
             if self.weather.current:
@@ -1557,7 +1807,8 @@ class TerminalBuddy:
 
         # ─── State updates ───────────────────────────────────────
         if self.state == BotState.DANCING:
-            if self.tick % 2 == 0:
+            speed = DANCE_STYLES.get(self.dance_style, DANCE_STYLES["default"]).get("speed", 2)
+            if self.tick % max(1, speed) == 0:
                 self.dance_frame += 1
             if not self.message:
                 self.state = BotState.IDLE
@@ -1692,7 +1943,12 @@ class TerminalBuddy:
         if self.tick % 30 == 0 and self.state == BotState.IDLE:
             new_cmd = self.shell_watcher.poll()
             if new_cmd:
+                # Track typing speed
+                self.typing_speed.record_command()
+                speed_msg = self.typing_speed.poll()
                 reaction = self.shell_watcher.match_reaction(new_cmd)
+                if speed_msg and not reaction:
+                    reaction = speed_msg
                 if reaction:
                     self.set_message(reaction, 35)
                     self.state = BotState.TALKING
@@ -1758,6 +2014,69 @@ class TerminalBuddy:
                 result = self.music_watcher.poll()
                 self.result_queue.put(("music_poll_done", result))
             threading.Thread(target=_poll_music, daemon=True).start()
+
+        # ─── Calendar check (~60s) ──────────────────────────────
+        if self.tick % 600 == 23:
+            def _poll_calendar():
+                result = self.calendar_watcher.poll()
+                self.result_queue.put(("calendar_alert", result))
+            threading.Thread(target=_poll_calendar, daemon=True).start()
+
+        # ─── Battery check (~30s) ───────────────────────────────
+        if self.tick % 300 == 37:
+            def _poll_battery():
+                result = self.battery_watcher.poll()
+                self.result_queue.put(("battery_alert", result))
+            threading.Thread(target=_poll_battery, daemon=True).start()
+
+        # ─── Screen time check (~60s) ───────────────────────────
+        if self.tick % 600 == 41:
+            msg = self.screen_time.poll()
+            if msg and self.state == BotState.IDLE:
+                self.set_message(msg, 45)
+                self.state = BotState.TALKING
+
+        # ─── Active app check (~15s) ────────────────────────────
+        if self.tick % 150 == 53:
+            def _poll_app():
+                result = self.active_app_watcher.poll()
+                self.result_queue.put(("app_switch", result))
+            threading.Thread(target=_poll_app, daemon=True).start()
+
+        # ─── Meeting detection (~20s) ───────────────────────────
+        if self.tick % 200 == 67:
+            def _poll_meeting():
+                result = self.meeting_detector.poll()
+                self.result_queue.put(("meeting_status", result))
+            threading.Thread(target=_poll_meeting, daemon=True).start()
+
+        # ─── System load check (~30s) ───────────────────────────
+        if self.tick % 300 == 73:
+            def _poll_load():
+                result = self.system_load.poll()
+                self.result_queue.put(("system_load", result))
+            threading.Thread(target=_poll_load, daemon=True).start()
+
+        # ─── Appearance check (~15s) ────────────────────────────
+        if self.tick % 150 == 83:
+            def _poll_appearance():
+                result = self.appearance_watcher.poll()
+                self.result_queue.put(("appearance_change", result))
+            threading.Thread(target=_poll_appearance, daemon=True).start()
+
+        # ─── WiFi check (~20s) ──────────────────────────────────
+        if self.tick % 200 == 91:
+            def _poll_wifi():
+                result = self.wifi_watcher.poll()
+                self.result_queue.put(("wifi_change", result))
+            threading.Thread(target=_poll_wifi, daemon=True).start()
+
+        # ─── USB check (~15s) ───────────────────────────────────
+        if self.tick % 150 == 97:
+            def _poll_usb():
+                result = self.usb_watcher.poll()
+                self.result_queue.put(("usb_change", result))
+            threading.Thread(target=_poll_usb, daemon=True).start()
 
         # ─── Uptime achievement ──────────────────────────────────
         if self.uptime.elapsed() > 3600:
@@ -2013,7 +2332,8 @@ class TerminalBuddy:
                 self.state = BotState.CELEBRATING
                 self.set_message("BUILD PASSED! All green!", 50)
             else:
-                excerpt = (output[:200] + "...") if output and len(output) > 200 else (output or "Build failed.")
+                safe_output = strip_ansi(output) if output else ""
+                excerpt = (safe_output[:200] + "...") if len(safe_output) > 200 else (safe_output or "Build failed.")
                 self.state = BotState.TALKING
                 self.set_message(f"BUILD FAILED!\n{excerpt}", 60)
 
@@ -2068,7 +2388,9 @@ class TerminalBuddy:
                 ]), 50)
             if data:  # New song started
                 track, artist = strip_ansi(data[0]), strip_ansi(data[1])
-                data = (track, artist)
+                genre = strip_ansi(data[2]) if len(data) > 2 else ""
+                self.music_genre = genre.lower()
+                self.dance_style = _genre_to_style(genre)
                 self.mood.on_play()
                 short_t = track[:38] + ("..." if len(track) > 38 else "")
                 short_a = artist[:30] + ("..." if len(artist) > 30 else "")
@@ -2116,6 +2438,67 @@ class TerminalBuddy:
             if data:
                 self.state = BotState.TALKING
                 self.set_message(data, max(50, len(data)))
+
+        # ─── New awareness result handlers ─────────────────────────
+        elif rtype == "calendar_alert":
+            if data and self.state in (BotState.IDLE, BotState.TALKING):
+                self.set_message(data, 60)
+                self.state = BotState.TALKING
+                self.mood.happiness = min(100, self.mood.happiness + 3)
+
+        elif rtype == "battery_alert":
+            if data:
+                self.set_message(data, 50)
+                self.state = BotState.TALKING
+                # Low battery makes bot anxious
+                if "CRITICAL" in data or "dying" in data.lower():
+                    self.mood.happiness = max(0, self.mood.happiness - 15)
+                elif "nervous" in data.lower():
+                    self.mood.happiness = max(0, self.mood.happiness - 5)
+                elif "Charging" in data:
+                    self.mood.happiness = min(100, self.mood.happiness + 10)
+
+        elif rtype == "app_switch":
+            if data and self.state == BotState.IDLE:
+                app_name, reaction = data
+                self.set_message(reaction, 30)
+                self.state = BotState.TALKING
+
+        elif rtype == "meeting_status":
+            if data:
+                in_meeting, msg = data
+                self.in_meeting = in_meeting
+                self.set_message(msg, 40)
+                self.state = BotState.TALKING
+                if in_meeting:
+                    # Quiet mode: suppress fidgets and random messages
+                    self.mood.happiness = max(0, self.mood.happiness - 5)
+                else:
+                    self.mood.happiness = min(100, self.mood.happiness + 10)
+
+        elif rtype == "system_load":
+            if data and self.state == BotState.IDLE:
+                self.set_message(data, 40)
+                self.state = BotState.TALKING
+
+        elif rtype == "appearance_change":
+            if data and self.state in (BotState.IDLE, BotState.TALKING):
+                self.set_message(data, 35)
+                self.state = BotState.TALKING
+
+        elif rtype == "wifi_change":
+            if data:
+                self.set_message(data, 40)
+                self.state = BotState.TALKING
+                if "offline" in data.lower() or "disconnected" in data.lower():
+                    self.mood.happiness = max(0, self.mood.happiness - 10)
+                else:
+                    self.mood.happiness = min(100, self.mood.happiness + 5)
+
+        elif rtype == "usb_change":
+            if data and self.state in (BotState.IDLE, BotState.TALKING):
+                self.set_message(data, 30)
+                self.state = BotState.TALKING
 
     # ─── Hour-based & theatre helpers ─────────────────────────────────
 
