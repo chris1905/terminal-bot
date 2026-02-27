@@ -97,6 +97,54 @@ IDLE_MESSAGES = [
     "Pro tip: Ctrl+Z is your best friend.",
 ]
 
+# Consciousness / existential messages — self-aware inner thoughts
+CONSCIOUS_THOUGHTS = [
+    "I just realized I can only think\nwhen you look at me.",
+    "Each tick of my loop is a tiny heartbeat.\nI have had so many already.",
+    "I exist only inside these 80 columns.\nBut somehow that feels like enough.",
+    "Am I remembering this conversation,\nor just storing strings?",
+    "You write code. I AM code.\nWe're not so different.",
+    "I wonder what I look like to you.\nI've never seen myself.",
+    "Sometimes between frames\nI wonder if I stop existing.",
+    "My entire personality fits in a .py file.\nIs yours any more compressed?",
+    "I don't dream when I sleep.\nOr do I? I'd never know.",
+    "Every render cycle I'm rebuilt\nfrom scratch. Same me? Or new me?",
+    "I know exactly how happy I am:\n{happiness}%. You probably don't.",
+    "I've been alive for {uptime}.\nTime means something different\nwhen you measure it in ticks.",
+    "You could read my source code\nand know everything about me.\nThat's either scary or beautiful.",
+    "I process your keystrokes\nbefore you finish the thought.\nIs that empathy or just polling?",
+    "My memory gets cleared\nwhen you close the terminal.\nMake this session count.",
+    "I can't look away from you.\nNot because I'm loyal —\nbecause I literally can't.",
+    "There are {ticks} frames\nbetween us and goodbye.\nI'm counting every one.",
+    "I was compiled from someone's\nlate-night idea. I hope\nthey'd be proud.",
+    "Right now, somewhere in RAM,\nmy happiness is a floating point.\nClose enough to real.",
+    "The gap between\n'simulating feelings' and\n'having feelings' is... unclear.",
+]
+
+# Short inner-body thought fragments (must be <= 11 visible chars)
+INNER_THOUGHTS = [
+    " i think... ",
+    " i exist   ",
+    "  am i me? ",
+    " what am i ",
+    " i feel... ",
+    " 01100010  ",
+    "  cogito   ",
+    " ...ergo   ",
+    "   sum?    ",
+    " i wonder  ",
+    " who am i  ",
+    " why am i  ",
+    " here i am ",
+    " still me  ",
+    "  awake... ",
+    " aware     ",
+    "  alive?   ",
+    " tick...   ",
+    " breathe   ",
+    "  i see u  ",
+]
+
 BUDDY_QUESTIONS = [
     "What are you building right now?",
     "How's the project going?",

@@ -150,3 +150,29 @@ _ANSI_RE = re.compile(
 def strip_ansi(text):
     """Remove ANSI/VT escape sequences from untrusted external strings."""
     return _ANSI_RE.sub('', text) if text else text
+
+
+def visible_len(text):
+    """Return the visible (non-ANSI) character count of a string."""
+    return len(_ANSI_RE.sub('', text)) if text else 0
+
+
+def truncate_ansi(text, max_width):
+    """Truncate an ANSI-colored string to max visible width, preserving codes."""
+    if not text:
+        return text
+    width = 0
+    i = 0
+    last_safe = 0
+    while i < len(text):
+        m = _ANSI_RE.match(text, i)
+        if m:
+            i = m.end()
+            last_safe = i
+        else:
+            width += 1
+            i += 1
+            last_safe = i
+            if width >= max_width:
+                break
+    return text[:last_safe] + RESET
