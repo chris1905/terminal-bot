@@ -1,6 +1,6 @@
 # Terminal Buddy v2.0
 
-A lively ASCII bot that lives in your terminal. Animated eyes, AI-powered chat, code roasting, typing races, trivia, weather moods, achievement system, pomodoro timer, and much more. Pure Python 3 — zero external dependencies.
+A lively ASCII bot that lives in your terminal. Animated eyes, AI-powered chat, code roasting, typing races, trivia, weather moods, Apple Music sync, achievement system, pomodoro timer, and much more. Pure Python 3 — zero external dependencies.
 
 Built for iTerm2 (and any terminal with ANSI/truecolor support).
 
@@ -75,6 +75,7 @@ chmod +x setup.sh && ./setup.sh
 | `6` | Toggle sixel/iTerm2 image mode |
 | `/` | Show help overlay |
 | `q` | Quit |
+| `1` / `2` | Answer Buddy's curiosity prompt (appears automatically when he finds something interesting) |
 
 ### Chat Mode (after pressing `t` or `Enter`)
 
@@ -106,7 +107,9 @@ Type the displayed code snippet as fast as you can. Your WPM and accuracy are tr
 
 ### AI-Powered Content (Claude Haiku 4.5 via Anthropic API)
 - **Buddy chat** — Conversational AI that remembers your session. Press `t` to type. Shows "You: ..." while Buddy thinks.
-- **Proactive questions** — Buddy asks YOU things every ~2 minutes when you're idle. How's the project? What are you building? He remembers your answers and references them.
+- **Proactive messages** — Every ~2 minutes Buddy spontaneously asks questions, shares opinions, checks in on you, or goes into curiosity mode.
+- **Web curiosity** — Buddy autonomously picks an interesting tech topic, looks it up (DuckDuckGo / Wikipedia), and surfaces it: `[1] Tell me!  [2] Skip`. Press `1` and he'll excitedly explain what he found. Fully automatic — fires as part of the idle proactive cycle.
+- **Personalized commit reactions** — When you commit, Buddy reads the actual commit message and reacts to *what you did specifically*, not a generic canned line.
 - **Fresh quotes & jokes** — AI-generated, never-repeating within a session.
 - **Code roasting** — Reads your `git diff` and lovingly roasts your code. Falls back to a pool of generic roasts without API.
 - **Commit message poet** — Reads staged changes and generates dramatic, over-the-top commit messages.
@@ -114,10 +117,11 @@ Type the displayed code snippet as fast as you can. Your WPM and accuracy are tr
 
 ### Terminal Awareness
 - **Shell history reactions** — Watches `~/.zsh_history` or `~/.bash_history` and reacts to commands like `rm -rf`, `git push --force`, `sudo`, `npm install`, etc.
-- **Git commit detection** — Watches `.git/COMMIT_EDITMSG` for new commits and celebrates every push with sparkles + mood boost.
+- **Git commit detection** — Watches `.git/COMMIT_EDITMSG` for new commits and celebrates with a personalized AI reaction referencing your actual commit message. Works with git worktrees too.
 - **Build runner** — Auto-detects your build system (npm, make, cargo, go, python) and runs builds in the background. Shows success/failure.
 - **Uptime & git streak** — Track how long you've been coding and your daily commit streak.
 - **Clipboard watcher** — Detects code pastes from clipboard and makes cheeky comments.
+- **Apple Music sync** — Detects what's playing via AppleScript (macOS). Bot sings along: happy/star eyes, `♪`/`♫` mouth animation, dancing arms, musical notes on the chest panel, rhythmic body bob, `♪` in the title bar and status line. With API enabled, Buddy reacts to the specific song/artist by name.
 
 ### Games & Timer
 - **Typing race** — Code snippet typing challenge with WPM and accuracy scoring.
@@ -141,7 +145,7 @@ Type the displayed code snippet as fast as you can. Your WPM and accuracy are tr
 ### Weather Mood
 - Fetches weather from `wttr.in` (free, no API key needed).
 - Maps conditions to bot moods: sunny = happy, rainy = cozy, thunderstorm = intense, foggy = mysterious.
-- Affects the bot's eye expression.
+- Affects the bot's eye expression, and pulls out the umbrella on rainy/snowy days.
 
 ### Visual
 - **Animated eyes** — Blink, wander, react to actions, spin while thinking.
@@ -198,7 +202,7 @@ terminal-bot/
 │   ├── ansi.py            # ANSI escape codes, colors, cursor control
 │   ├── data.py            # All static data: quotes, jokes, trivia, achievements, reactions
 │   ├── ai_features.py     # Code roast, commit poet, non-repeating pools
-│   ├── awareness.py       # Shell history watcher, build runner, uptime, git streak, clipboard, commit watcher
+│   ├── awareness.py       # Shell history watcher, build runner, uptime, git streak, clipboard, commit watcher, web researcher, music watcher
 │   ├── games.py           # Typing race, trivia, pomodoro timer
 │   ├── achievements.py    # Achievement tracker with JSON persistence
 │   ├── productivity.py    # TODO scanner, PR checker
@@ -217,6 +221,7 @@ terminal-bot/
 - **Optional:** `ANTHROPIC_API_KEY` for AI-powered responses
 - **Optional:** `gh` CLI for PR checking
 - **Optional:** `xclip` or `xsel` (Linux) for clipboard watching
+- **Optional:** Apple Music (macOS) for music sync — no setup needed, uses built-in AppleScript
 
 ## License
 

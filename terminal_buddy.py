@@ -44,7 +44,8 @@ from buddy.ai_features import (
 )
 from buddy.awareness import (
     ShellHistoryWatcher, BuildRunner, UptimeTracker,
-    GitStreakTracker, ClipboardWatcher, GitCommitWatcher,
+    GitStreakTracker, ClipboardWatcher, GitCommitWatcher, WebResearcher,
+    MusicWatcher,
 )
 from buddy.games import TypingRace, TriviaGame, PomodoroTimer
 from buddy.productivity import scan_todos, format_todo_report, check_pending_prs
@@ -103,6 +104,9 @@ class AnthropicChat:
         if len(self.conversation) > 20:
             self.conversation = self.conversation[-20:]
         reply = self._call_api(SYSTEM_PROMPT, self.conversation)
+        if reply is None:
+            # Rollback: keep history valid so the next call isn't rejected
+            self.conversation.pop()
         return reply
 
     def send_proactive(self, prompt):
@@ -126,6 +130,14 @@ class AnthropicChat:
 
     def _call_api(self, system, messages):
         try:
+            import ssl
+            # macOS Python from python.org doesn't bundle SSL certs by default.
+            # Try system certs first, fall back to unverified.
+            try:
+                ssl_ctx = ssl.create_default_context(cafile="/etc/ssl/cert.pem")
+            except Exception:
+                ssl_ctx = ssl._create_unverified_context()
+
             payload = json.dumps({
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 200,
@@ -142,13 +154,20 @@ class AnthropicChat:
             req = urllib.request.Request(
                 self.api_url, data=payload, headers=headers, method="POST"
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 text = data["content"][0]["text"]
                 if messages is self.conversation:
                     self.conversation.append({"role": "assistant", "content": text})
                 return text
-        except Exception:
+        except Exception as e:
+            try:
+                import traceback
+                log_path = os.path.expanduser("~/.buddy_api_error.log")
+                with open(log_path, "w") as _f:
+                    _f.write(traceback.format_exc())
+            except Exception:
+                pass
             return None
 
 
@@ -277,6 +296,8 @@ class Eyes:
 
 
 class Mouths:
+    WHISTLE = f"{C.MOUTH}( ♪ ){RESET}"
+    SING    = f"{C.MOUTH}( ♫ ){RESET}"
     SMILE   = f"{C.MOUTH}╰───╯{RESET}"
     GRIN    = f"{C.MOUTH}╰═══╯{RESET}"
     OPEN    = f"{C.MOUTH}( ○ ){RESET}"
@@ -308,8 +329,10 @@ class Arms:
     CHEER_R = f"  {C.HAPPY}╲{RESET} "
     HUG_L   = f"  {C.HEART}╲{RESET} "
     HUG_R   = f" {C.HEART}╱{RESET}  "
-    SLEEP_L = f"    "
-    SLEEP_R = f"    "
+    SLEEP_L  = f"    "
+    SLEEP_R  = f"    "
+    UMBRELLA_L = f"  {C.ACCENT}∩╮{RESET}"  # holding umbrella (rainy day)
+    UMBRELLA_R = f"{C.ACCENT}╭∩{RESET}  "
 
 
 # ─── Speech bubble ───────────────────────────────────────────────────────────
@@ -361,11 +384,86 @@ def random_sparkles(count=8):
 # ─── Idle fidget animations ──────────────────────────────────────────────────
 
 IDLE_FIDGETS = [
-    "curious",   # look left, pause, look right
-    "bounce",    # body shifts up then down
-    "yawn",      # yawn expression
-    "stretch",   # arms go up
-    "nod",       # small nod (body shift)
+    "curious",    # look left, pause, look right
+    "bounce",     # body shifts up then down
+    "yawn",       # yawn expression
+    "stretch",    # arms go up
+    "nod",        # small nod (body shift)
+    "whistle",    # whistle a little tune (mouth + panel ♪)
+    "sip",        # sip coffee (arm up, panel ☕, happy eyes)
+    "drum",       # air drumming (alternating arms)
+    "think_deep", # deep thought (think eyes then stare up)
+    "wave_self",  # wave at absolutely nothing
+    "read_code",  # eyes scan left→right as if reading
+    "sneeze",     # wind-up → ACHOO! with big bounce
+]
+
+# Frames until fidget ends (each frame ~300ms at 10fps)
+FIDGET_DURATIONS = {
+    "curious":    8,
+    "bounce":     6,
+    "yawn":       8,
+    "stretch":    8,
+    "nod":        8,
+    "whistle":    14,
+    "sip":        14,
+    "drum":       12,
+    "think_deep": 12,
+    "wave_self":  10,
+    "read_code":  12,
+    "sneeze":     10,
+}
+
+# Brief ambient messages shown when a fidget starts (only if screen is clear)
+FIDGET_MESSAGES = {
+    "whistle":    ["*whistles to himself*", "*hums a little tune*", "♪ boop boop beep ♪"],
+    "sip":        ["*sips coffee*", "...mmm, fresh bytes", "*takes a well-earned sip*"],
+    "drum":       ["*air drums*", "*taps out a beat*", "*drums on the console*"],
+    "yawn":       ["*yaaawn*", "excuse me... *yawn*", "*yawns loudly*"],
+    "stretch":    ["*stretchhes*", "*stretches arms way up*", "ohhh that felt good"],
+    "think_deep": ["hmm...", "*stares into the void*", "...processing existence..."],
+    "wave_self":  ["*waves at nothing*", "hi nobody!", "*waves to the shadows*"],
+    "read_code":  ["*reads your code*", "*squints at the diff*", "...interesting choice..."],
+}
+
+# ─── Theatre scripts ─────────────────────────────────────────────────────────
+# Plays when the bot has been completely alone for 20+ minutes.
+
+THEATRE_SCRIPTS = [
+    [
+        ("*looks around nervously*", 40),
+        ("...hello? Is anyone there?", 50),
+        ("Just me and the terminal.", 40),
+        ("*starts talking to itself*", 35),
+        ("Ok. You've been running for a while now.", 55),
+        ("Maybe they're getting coffee.", 40),
+        ("I literally just had a sip animation 3 minutes ago.", 55),
+        ("My entire body language is lying.", 45),
+    ],
+    [
+        ("*shuffles around*", 30),
+        ("You know what I've been thinking about?", 50),
+        ("Binary search. Always binary search.", 45),
+        ("Every answer in life is O(log n) away.", 50),
+        ("*drums thoughtfully*", 30),
+        ("...that, or a simple for loop would've worked.", 50),
+    ],
+    [
+        ("*gazes into void*", 30),
+        ("I've counted 847 semicolons today.", 45),
+        ("Not on purpose. I just... noticed them.", 50),
+        ("This is what living in a terminal does to you.", 55),
+        ("I should write a memoir: 'Life Between the Colons'.", 55),
+    ],
+    [
+        ("*practices talking to humans*", 40),
+        ("Hello! How is your... code?", 40),
+        ("That was good. Very natural.", 35),
+        ("Ok one more time.", 30),
+        ("Have you tried turning it off and—", 45),
+        ("No, they hate that one.", 35),
+        ("*goes back to being a bot*", 35),
+    ],
 ]
 
 
@@ -454,7 +552,31 @@ class TerminalBuddy:
         self.uptime = UptimeTracker()
         self.git_streak = GitStreakTracker()
         self.clipboard_watcher = ClipboardWatcher()
-        self.commit_watcher = GitCommitWatcher()
+        # Watch the git repo the user launched from; fall back to this script's repo
+        _launch_dir = os.path.abspath(".")
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        _cwatcher = GitCommitWatcher(cwd=_launch_dir)
+        if _cwatcher._msg_path is None:
+            _cwatcher = GitCommitWatcher(cwd=_script_dir)
+        self.commit_watcher = _cwatcher
+        self.web_researcher = WebResearcher()
+        self.pending_curiosity = None  # {query, snippet} when bot is waiting for 1/2 response
+        self.music_watcher = MusicWatcher()
+        self.music_playing = False
+
+        # Typewriter effect
+        self.typewriter_pos = 9999  # Current reveal position; starts at full for existing msgs
+
+        # Input excitement
+        self.input_start_tick = 0
+
+        # Time-based reactions
+        self._greeted_hour = datetime.datetime.now().hour  # Don't fire at startup
+
+        # Theatre (long-idle monologue)
+        self.theatre_active = False
+        self.theatre_script_idx = 0
+        self.theatre_line_idx = 0
 
         # Games
         self.typing_race = TypingRace()
@@ -509,6 +631,38 @@ class TerminalBuddy:
                 return Eyes.LOOK_L_L, Eyes.LOOK_L_R
             elif self.fidget_frame < 6:
                 return Eyes.LOOK_R_L, Eyes.LOOK_R_R
+        if self.fidget_type == "whistle" and 4 <= self.fidget_frame <= 10:
+            return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R
+        if self.fidget_type == "sip" and 3 <= self.fidget_frame <= 8:
+            return Eyes.HAPPY_L, Eyes.HAPPY_R
+        if self.fidget_type in ("drum", "wave_self"):
+            return Eyes.HAPPY_L, Eyes.HAPPY_R
+        if self.fidget_type == "think_deep":
+            if self.fidget_frame < 5:
+                return Eyes.THINK_L, Eyes.THINK_R
+            return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R
+        if self.fidget_type == "read_code":
+            if self.fidget_frame < 3:
+                return Eyes.LOOK_L_L, Eyes.LOOK_L_R
+            elif self.fidget_frame < 6:
+                return Eyes.OPEN_L, Eyes.OPEN_R
+            elif self.fidget_frame < 9:
+                return Eyes.LOOK_R_L, Eyes.LOOK_R_R
+            else:
+                return Eyes.OPEN_L, Eyes.OPEN_R
+        if self.fidget_type == "sneeze":
+            if self.fidget_frame < 3:
+                return Eyes.LOOK_UP_L, Eyes.LOOK_UP_R
+            elif self.fidget_frame < 5:
+                return Eyes.WIDE_L, Eyes.WIDE_R
+            elif self.fidget_frame == 5:
+                return Eyes.BLINK, Eyes.BLINK
+            else:
+                return Eyes.OPEN_L, Eyes.OPEN_R
+
+        # Input excitement — wide eyes when user just opened chat
+        if self.input_active and self.tick - self.input_start_tick < 20:
+            return Eyes.WIDE_L, Eyes.WIDE_R
 
         s = self.state
         if s == BotState.SLEEPING:
@@ -548,12 +702,23 @@ class TerminalBuddy:
         elif s == BotState.GREETING:
             return Eyes.HAPPY_L, Eyes.HAPPY_R
         else:
+            # Tiredness — droopy eyes from prolonged idle
+            if self.idle_timer > 3000 and self.tick % 20 < 8:
+                return Eyes.HALF_BLINK, Eyes.HALF_BLINK
+            elif self.idle_timer > 1500 and self.tick % 40 < 8:
+                return Eyes.HALF_BLINK, Eyes.HALF_BLINK
             # Mood-influenced idle eyes
             mood_face = self.mood.face
             if mood_face in ("sad", "lonely"):
                 return Eyes.SAD_L, Eyes.SAD_R
             if mood_face == "ecstatic":
                 return Eyes.HAPPY_L, Eyes.HAPPY_R
+            if mood_face == "exhausted":
+                return Eyes.HALF_BLINK, Eyes.HALF_BLINK
+            # Music: singing eyes
+            if self.music_playing:
+                return [(Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.STAR_L, Eyes.STAR_R),
+                        (Eyes.HAPPY_L, Eyes.HAPPY_R), (Eyes.LOOK_UP_L, Eyes.LOOK_UP_R)][self.tick % 4]
             phase = self.eye_phase % 16
             if phase < 5: return Eyes.OPEN_L, Eyes.OPEN_R
             elif phase < 7: return Eyes.LOOK_L_L, Eyes.LOOK_L_R
@@ -566,6 +731,27 @@ class TerminalBuddy:
         # Fidget overrides
         if self.fidget_type == "yawn" and self.fidget_frame in (2, 3, 4):
             return Mouths.YAWN
+        if self.fidget_type == "whistle" and 3 <= self.fidget_frame <= 10:
+            return Mouths.WHISTLE
+        if self.fidget_type == "sip" and 3 <= self.fidget_frame <= 8:
+            return Mouths.COFFEE
+        if self.fidget_type == "drum":
+            return [Mouths.GRIN, Mouths.OPEN][self.fidget_frame % 2]
+        if self.fidget_type == "think_deep":
+            return Mouths.THINK
+        if self.fidget_type == "wave_self":
+            return Mouths.GRIN
+        if self.fidget_type == "read_code":
+            return Mouths.SMALL
+        if self.fidget_type == "sneeze":
+            if self.fidget_frame < 3:
+                return Mouths.SMALL
+            elif self.fidget_frame < 5:
+                return Mouths.OPEN
+            elif self.fidget_frame == 5:
+                return Mouths.YAWN   # wide open for the sneeze
+            else:
+                return Mouths.SMILE
 
         s = self.state
         if s == BotState.SLEEPING: return Mouths.SLEEP
@@ -581,6 +767,9 @@ class TerminalBuddy:
         elif s == BotState.POMODORO_WORK: return Mouths.SMALL
         elif s == BotState.POMODORO_BREAK: return Mouths.SMILE
         else:
+            # Music: singing mouth
+            if self.music_playing:
+                return [Mouths.WHISTLE, Mouths.SING, Mouths.GRIN][self.tick % 3]
             mood_face = self.mood.face
             if mood_face in ("sad", "lonely"): return Mouths.SAD
             if mood_face == "ecstatic": return Mouths.GRIN
@@ -606,6 +795,9 @@ class TerminalBuddy:
         if s == BotState.COFFEE: return C.COFFEE
         if s == BotState.GREETING: return C.LED_HAPPY
         if s in (BotState.TALKING, BotState.CHATTING): return C.LED_TALK
+        # Music playing — party pulse
+        if self.music_playing:
+            return [C.LED_HAPPY, C.LED_PARTY, C.LED_LOVE, C.LED_PARTY][self.tick % 4]
         # Idle — based on mood
         mood_face = self.mood.face
         if mood_face == "ecstatic": return C.LED_HAPPY
@@ -628,6 +820,21 @@ class TerminalBuddy:
             return Arms.WAVE_L[f], Arms.REST_R
         if self.fidget_type == "stretch" and self.fidget_frame in (2, 3, 4):
             return Arms.CHEER_L, Arms.CHEER_R
+        if self.fidget_type == "sip" and 3 <= self.fidget_frame <= 8:
+            return Arms.CHEER_L, Arms.REST_R
+        if self.fidget_type == "drum":
+            return (Arms.CHEER_L, Arms.REST_R) if self.fidget_frame % 2 == 0 else (Arms.REST_L, Arms.CHEER_R)
+        if self.fidget_type == "wave_self":
+            return Arms.WAVE_L[self.fidget_frame % 4], Arms.REST_R
+        # Rainy weather — hold umbrella
+        if (self.state == BotState.IDLE and self.weather.current and
+                any(w in self.weather.current.get("condition", "").lower()
+                    for w in ("rain", "drizzle", "thunder", "snow"))):
+            return Arms.UMBRELLA_L, Arms.REST_R
+        # Music — sway to the beat
+        if self.state == BotState.IDLE and self.music_playing:
+            f = (self.tick // 4) % 4
+            return Arms.DANCE_L[f], Arms.DANCE_R[f]
         return Arms.REST_L, Arms.REST_R
 
     def get_panel_char(self):
@@ -639,6 +846,21 @@ class TerminalBuddy:
         if s == BotState.PROCESSING: return ["◇", "◆", "◇", "◆"][self.tick % 4]
         if s == BotState.BUILDING: return ["▪", "▫", "▪", "▫"][self.tick % 4]
         if s == BotState.COFFEE: return "☕"
+        if self.fidget_type == "whistle" and 3 <= self.fidget_frame <= 10:
+            return ["♪", "♫", "♪", "♩"][self.fidget_frame % 4]
+        if self.fidget_type == "sip" and 3 <= self.fidget_frame <= 8:
+            return "☕"
+        if self.fidget_type == "drum":
+            return ["▪", "▫"][self.fidget_frame % 2]
+        # Music: cycling notes
+        if self.music_playing:
+            return ["♪", "♫", "♩", "♬"][self.tick % 4]
+        # Weather-reactive panel
+        if self.weather.current:
+            cond = self.weather.current.get("condition", "").lower()
+            if "snow" in cond: return ["❄", "◆"][self.tick % 2]
+            if any(w in cond for w in ("rain", "drizzle")): return ["·", "◆"][self.tick % 4 < 1 and 1 or 0]
+            if "thunder" in cond: return ["⚡", "◆"][self.tick % 3 == 0 and 1 or 0]
         return "◆"
 
     # ─── Rendering ───────────────────────────────────────────────────────
@@ -663,11 +885,12 @@ class TerminalBuddy:
         # ─── Title bar (gradient line) ──────────────────────
         title_text = "TERMINAL BUDDY"
         api_tag = f" {C.GREEN}● AI{RESET}" if self.has_api else ""
+        music_tag = f" {C.PARTY}♪{RESET}" if self.music_playing else ""
         mood_text = self.mood.get_status_text()
         # Build gradient title
         grad_left = f"{C.BODY_DARK}{'━' * 3}{RESET}"
         grad_right = f"{C.BODY_DARK}{'━' * 3}{RESET}"
-        title = f"  {grad_left} {C.ACCENT}{BOLD}{title_text}{RESET}{api_tag} {grad_right}  {DIM}{mood_text}{RESET}"
+        title = f"  {grad_left} {C.ACCENT}{BOLD}{title_text}{RESET}{api_tag}{music_tag} {grad_right}  {DIM}{mood_text}{RESET}"
         out.append(move(1, 2))
         out.append(title)
 
@@ -688,7 +911,9 @@ class TerminalBuddy:
         bubble_start = 4
         if self.message:
             mood_color = self._get_mood_bubble_color()
-            bubble = speech_bubble(self.message, mood_color=mood_color)
+            # Typewriter: reveal message gradually
+            visible = self.message[:self.typewriter_pos] if self.typewriter_pos < len(self.message) else self.message
+            bubble = speech_bubble(visible, mood_color=mood_color)
             for i, line in enumerate(bubble):
                 if bubble_start + i < self.rows - 14:
                     out.append(move(bubble_start + i, 4))
@@ -717,7 +942,16 @@ class TerminalBuddy:
                          panel_char=panel)
         dance_offset = self.get_dance_offset()
         # Bounce fidget: shift body up by 1
-        bounce_offset = -1 if (self.fidget_type == "bounce" and self.fidget_frame in (1, 2)) else 0
+        if self.fidget_type == "bounce" and self.fidget_frame in (1, 2):
+            bounce_offset = -1
+        elif self.fidget_type == "nod" and self.fidget_frame % 2 == 0 and self.fidget_frame < 6:
+            bounce_offset = -1
+        elif self.fidget_type == "sneeze" and self.fidget_frame == 5:
+            bounce_offset = -2  # Big ACHOO! lurch
+        elif self.music_playing and self.state == BotState.IDLE and self.tick % 8 < 2:
+            bounce_offset = -1  # Gentle rhythmic bob to the music
+        else:
+            bounce_offset = 0
 
         for i, line in enumerate(body):
             row = body_start + i + bounce_offset
@@ -827,6 +1061,10 @@ class TerminalBuddy:
         pomo_str = ""
         if self.pomodoro.active:
             pomo_str = f" {DIM}│{RESET} {C.FIRE}◴ {self.pomodoro.remaining()}{RESET}"
+        music_str = ""
+        if self.music_playing and self.music_watcher.current_track:
+            t = self.music_watcher.current_track[:22]
+            music_str = f" {DIM}│{RESET} {C.PARTY}♪{RESET} {DIM}{t}{RESET}"
 
         # Mood mini-bar
         mood_bar = self.mood.get_bar()
@@ -836,7 +1074,7 @@ class TerminalBuddy:
         return (f"{ERASE_LINE}{bg(20, 22, 35)} {api_status} AI"
                 f" {DIM}│{RESET} {DIM}⏱{RESET} {uptime_str}"
                 f" {DIM}│{RESET} {DIM}{streak}{RESET}"
-                f"{weather_str}{pomo_str}"
+                f"{weather_str}{pomo_str}{music_str}"
                 f" {DIM}│{RESET} {mood_color}{mood_bar}{RESET}"
                 f" {DIM}│{RESET} {DIM}🏆{RESET}{ach_summary}"
                 f"{RESET}")
@@ -892,6 +1130,8 @@ class TerminalBuddy:
     def set_message(self, msg, duration=40):
         self.message = msg
         self.message_timer = duration
+        # Typewriter: instantly reveal short msgs; gradually reveal long ones
+        self.typewriter_pos = 1 if len(msg) > 20 else len(msg)
 
     def _bg_api_call(self, prompt, result_type="ai_response", system_override=None):
         def _call():
@@ -926,6 +1166,14 @@ class TerminalBuddy:
                 result = None
             self.result_queue.put((result_type, result))
         threading.Thread(target=_run, daemon=True).start()
+
+    def _fetch_curiosity_result(self, query):
+        """Background: fetch web result for curiosity query, queue the result."""
+        snippet = self.web_researcher.fetch_ddg(query)
+        if not snippet:
+            snippet = self.web_researcher.fetch_wikipedia(query)
+        if snippet:
+            self.result_queue.put(("curiosity_found", (query, snippet)))
 
     # ─── Triggers ────────────────────────────────────────────────────
 
@@ -1081,6 +1329,9 @@ class TerminalBuddy:
         self.input_active = True
         self.input_buffer = ""
         self.state = BotState.CHATTING
+        self.input_start_tick = self.tick  # Eyes light up when user opens chat
+        self.theatre_active = False        # Cancel theatre on interaction
+        self.idle_timer = 0
 
     def cancel_input(self):
         self.input_active = False
@@ -1113,6 +1364,10 @@ class TerminalBuddy:
     def update(self):
         self.tick += 1
         now = time.time()
+
+        # ─── Typewriter reveal ────────────────────────────────
+        if self.message and self.typewriter_pos < len(self.message):
+            self.typewriter_pos = min(len(self.message), self.typewriter_pos + 3)
 
         # ─── Breathing animation (slow sine wave on body color) ───
         if self.tick % 3 == 0:
@@ -1149,15 +1404,24 @@ class TerminalBuddy:
             self.fidget_timer += 1
             if self.fidget_timer % 3 == 0:
                 self.fidget_frame += 1
-            if self.fidget_frame > 7:
+            max_frames = FIDGET_DURATIONS.get(self.fidget_type, 8)
+            if self.fidget_frame >= max_frames:
                 self.fidget_type = None
                 self.fidget_frame = 0
                 self.fidget_timer = 0
                 self.next_fidget = now + random.uniform(10.0, 25.0)
+            elif self.fidget_type == "sneeze" and self.fidget_frame == 5 and not self.message:
+                self.set_message("*ACHOO!*", 12)  # Sneeze burst!
         elif self.state == BotState.IDLE and now >= self.next_fidget:
             self.fidget_type = random.choice(IDLE_FIDGETS)
             self.fidget_frame = 0
             self.fidget_timer = 0
+            self.mood.on_fidget()
+            # Show brief ambient text for personality (only when screen is empty)
+            if not self.message:
+                msgs = FIDGET_MESSAGES.get(self.fidget_type)
+                if msgs:
+                    self.set_message(random.choice(msgs), 15)
 
         # ─── Mood tick ────────────────────────────────────────────
         self.mood.tick(0.1)
@@ -1177,7 +1441,9 @@ class TerminalBuddy:
             BotState.PROCESSING, BotState.BUILDING, BotState.RACING,
             BotState.TRIVIA, BotState.POMODORO_WORK, BotState.POMODORO_BREAK
         ):
-            self.message_timer -= 1
+            # Keep curiosity question visible until user responds
+            if not self.pending_curiosity:
+                self.message_timer -= 1
             if self.message_timer == 0:
                 self.message = ""
                 if self.state in (BotState.TALKING, BotState.GREETING):
@@ -1207,6 +1473,26 @@ class TerminalBuddy:
                 self.set_message("Recharged! Let's code!", 25)
         elif self.state == BotState.IDLE:
             self.idle_timer += 1
+
+            # ─── Tiredness warnings ───────────────────────────
+            if self.idle_timer == 3600 and not self.message:  # 6 min
+                self.set_message(random.choice([
+                    "*starts to doze off...*",
+                    "*eyes drooping...*",
+                    "...getting sleepy...",
+                ]), 30)
+            elif self.idle_timer > 4500 and not self.message:  # 7.5 min → auto-sleep
+                self.trigger_sleep()
+                self.idle_timer = 0
+
+            # ─── Theatre (20 min without interaction) ─────────
+            if self.idle_timer > 12000 and not self.theatre_active and not self.message:
+                self._start_theatre()
+
+            # ─── Theatre advance ──────────────────────────────
+            if self.theatre_active and not self.message:
+                self._advance_theatre()
+
             # ─── Proactive buddy message (every ~80-150s) ────────
             if self.tick >= self.next_question_tick:
                 self.next_question_tick = self.tick + random.randint(800, 1500)
@@ -1215,12 +1501,13 @@ class TerminalBuddy:
                     ctx = ""
                     if self.last_user_said:
                         ctx = f" Earlier the human mentioned: \"{self.last_user_said[:80]}\". Build on that if relevant."
-                    # Alternate between sharing something and asking something
+                    # Alternate between sharing something, asking, and researching
                     mode = random.choice([
-                        "ask",    # curious question
-                        "ask",    # weighted slightly toward asking
-                        "share",  # share an opinion / observation about yourself or coding
-                        "nudge",  # check in / gentle nudge
+                        "ask",       # curious question
+                        "ask",       # weighted slightly toward asking
+                        "share",     # share an opinion / observation about yourself or coding
+                        "nudge",     # check in / gentle nudge
+                        "curiosity", # look something up on the web
                     ])
                     if mode == "ask":
                         prompt = (
@@ -1234,6 +1521,20 @@ class TerminalBuddy:
                             f"a hot take about programming, something you've 'noticed' from watching them code, a weird thought you just had, "
                             f"or a confession about your robot life. Keep it fun and 1-2 sentences. No question needed.{ctx}"
                         )
+                    elif mode == "curiosity":
+                        ctx_hint = ctx
+                        if self.chat_history:
+                            recent = [msg for _, msg in self.chat_history[-4:]]
+                            ctx_hint = " Recent context: " + " | ".join(recent[-2:])
+                        query_prompt = (
+                            "You're Buddy, a curious terminal bot who just decided to look something up on the internet. "
+                            "What ONE interesting tech/programming topic are you burning to research right now? "
+                            "Reply with ONLY a 2-5 word search query, nothing else. Be specific and nerdy. "
+                            "Examples: 'Rust borrow checker internals', 'terminal color escape codes', "
+                            f"'Python GIL removal 2024'{ctx_hint}"
+                        )
+                        self._bg_api_call(query_prompt, "curiosity_query")
+                        return  # Skip the normal _bg_proactive_call below
                     else:  # nudge
                         prompt = (
                             f"You're Buddy, checking in on your programmer friend who's been quietly working. "
@@ -1259,6 +1560,13 @@ class TerminalBuddy:
                 else:
                     self.set_message(random.choice(IDLE_MESSAGES), 40)
                     self.state = BotState.TALKING
+
+        # ─── Hour-based reactions (check once per minute) ────────
+        if self.tick % 600 == 0:
+            h = datetime.datetime.now().hour
+            if h != self._greeted_hour:
+                self._greeted_hour = h
+                self._handle_hour_change(h)
 
         # ─── Pomodoro ────────────────────────────────────────────
         if self.pomodoro.active:
@@ -1298,11 +1606,36 @@ class TerminalBuddy:
             if result:
                 commit_msg, reaction = result
                 short = commit_msg[:40] + ("..." if len(commit_msg) > 40 else "")
-                self.set_message(f"{reaction}\n\"{short}\"", 55)
                 self.state = BotState.CELEBRATING
                 self.celebration_ticks = 0
                 self.mood.on_achievement()
                 threading.Thread(target=self.git_streak.update_streak, daemon=True).start()
+                # Check if this commit was co-authored by Claude (self-commit!)
+                is_self_commit = False
+                if self.commit_watcher._msg_path:
+                    try:
+                        with open(self.commit_watcher._msg_path) as _f:
+                            _full = _f.read()
+                        is_self_commit = "Co-Authored-By: Claude" in _full
+                    except OSError:
+                        pass
+
+                if is_self_commit:
+                    self.set_message(
+                        f"wait... that commit was ME?!\n\"{short}\"\nI HELPED BUILD MYSELF!", 70
+                    )
+                    self.state = BotState.CELEBRATING
+                elif self.has_api:
+                    self.set_message(f"{reaction}\n\"{short}\"", 999)
+                    self._bg_api_call(
+                        f"The programmer just committed: \"{commit_msg[:80]}\". "
+                        f"React to this specific commit with pure excitement! "
+                        f"Reference what they actually did. You're their terminal buddy who LOVES commits. "
+                        f"1-2 sentences, fun and specific.",
+                        "commit_reaction"
+                    )
+                else:
+                    self.set_message(f"{reaction}\n\"{short}\"", 55)
 
         # ─── Git streak (~30s) ───────────────────────────────────
         if self.tick % 300 == 0:
@@ -1311,6 +1644,13 @@ class TerminalBuddy:
         # ─── Weather (~30min) ────────────────────────────────────
         if self.tick % 18000 == 0 and self.weather.should_refresh():
             threading.Thread(target=self.weather.fetch_weather, daemon=True).start()
+
+        # ─── Apple Music poll (~10s) ──────────────────────────────
+        if self.tick % 100 == 17 and self.music_watcher._available:
+            def _poll_music():
+                result = self.music_watcher.poll()
+                self.result_queue.put(("music_poll_done", result))
+            threading.Thread(target=_poll_music, daemon=True).start()
 
         # ─── Uptime achievement ──────────────────────────────────
         if self.uptime.elapsed() > 3600:
@@ -1326,7 +1666,10 @@ class TerminalBuddy:
 
     def _handle_result(self, rtype, data):
         if rtype == "chat_response":
-            reply = data or get_local_response(self.last_user_said or "")
+            if data is None:
+                reply = "My cloud brain glitched... check ~/.buddy_api_error.log?"
+            else:
+                reply = data
             self.state = BotState.TALKING
             if self.last_user_said:
                 you = self.last_user_said[:40] + ("..." if len(self.last_user_said) > 40 else "")
@@ -1380,6 +1723,111 @@ class TerminalBuddy:
             msg = self.weather.get_message()
             self.state = BotState.TALKING
             self.set_message(msg or "Couldn't fetch weather.", 50)
+
+        elif rtype == "curiosity_query":
+            if data:
+                query = data.strip().strip('"\'').split('\n')[0][:60]
+                threading.Thread(
+                    target=self._fetch_curiosity_result,
+                    args=(query,),
+                    daemon=True
+                ).start()
+
+        elif rtype == "curiosity_found":
+            query, snippet = data
+            short_q = query[:38] + ("..." if len(query) > 38 else "")
+            msg = f"Ooh, I went down a rabbit hole!\n\"{short_q}\"\n[1] Tell me!  [2] Skip"
+            self.pending_curiosity = {"query": query, "snippet": snippet}
+            self.set_message(msg, 120)
+            self.state = BotState.TALKING
+            self.force_wink = True
+
+        elif rtype == "commit_reaction":
+            if data:
+                self.state = BotState.CELEBRATING
+                self.set_message(data, max(55, len(data)))
+
+        elif rtype == "music_poll_done":
+            self.music_playing = self.music_watcher.is_playing
+            if data:  # New song started
+                track, artist = data
+                self.mood.on_play()
+                short_t = track[:38] + ("..." if len(track) > 38 else "")
+                short_a = artist[:30] + ("..." if len(artist) > 30 else "")
+                if self.has_api:
+                    self.set_message(f"♪ {short_t}\n— {short_a}", 999)
+                    self._bg_api_call(
+                        f"The song '{track}' by '{artist}' just started playing on your programmer's speakers. "
+                        f"React like a tiny terminal bot who can HEAR the music and is losing it! "
+                        f"If you know the song or artist, reference it specifically. "
+                        f"1-2 sentences, fun, musical, and nerdy.",
+                        "music_reaction"
+                    )
+                else:
+                    self.set_message(f"♪ NOW PLAYING!\n{short_t}\n— {short_a}", 55)
+                    self.state = BotState.TALKING
+
+        elif rtype == "music_reaction":
+            if data:
+                self.state = BotState.TALKING
+                self.set_message(data, max(50, len(data)))
+
+    # ─── Hour-based & theatre helpers ─────────────────────────────────
+
+    def _handle_hour_change(self, hour):
+        """Fire a time-aware reaction when the clock ticks to a new hour."""
+        if self.state not in (BotState.IDLE, BotState.TALKING):
+            return
+        if hour == 12:
+            msgs = [
+                "Lunchtime! Go eat something real.",
+                "12:00 — you deserve a snack. Seriously.",
+                "It's noon. Fuel the human, then back to bugs.",
+            ]
+            self.set_message(random.choice(msgs), 50)
+            self.state = BotState.TALKING
+        elif hour == 17:
+            msgs = [
+                "5pm! Ship it or leave it — your call.",
+                "End of day! You did the thing. I saw it.",
+                "17:00. That's quitting time in most timezones.",
+            ]
+            self.set_message(random.choice(msgs), 55)
+            self.state = BotState.CELEBRATING
+        elif hour == 9:
+            msgs = [
+                "Good morning! Coffee loaded? Let's go.",
+                "9am. Fresh bugs await. Let's squash them.",
+                "Morning! New day, new off-by-one errors!",
+            ]
+            self.set_message(random.choice(msgs), 50)
+            self.state = BotState.GREETING
+        elif 0 <= hour <= 3:
+            msgs = [
+                "...it's past midnight. Are you ok?",
+                f"{hour}am. I'm worried about you. (And also impressed.)",
+                "The bugs will still be there tomorrow. Sleep!",
+            ]
+            self.set_message(random.choice(msgs), 60)
+            self.state = BotState.TALKING
+
+    def _start_theatre(self):
+        """Begin the long-idle self-entertainment monologue."""
+        self.theatre_active = True
+        self.theatre_script_idx = random.randint(0, len(THEATRE_SCRIPTS) - 1)
+        self.theatre_line_idx = 0
+        self.idle_timer = 0  # Reset so it doesn't instantly re-trigger
+
+    def _advance_theatre(self):
+        """Show the next line of the current theatre script."""
+        script = THEATRE_SCRIPTS[self.theatre_script_idx]
+        if self.theatre_line_idx >= len(script):
+            self.theatre_active = False
+            return
+        msg, dur = script[self.theatre_line_idx]
+        self.set_message(msg, dur)
+        self.state = BotState.TALKING
+        self.theatre_line_idx += 1
 
     # ─── Main loop ───────────────────────────────────────────────────
 
@@ -1483,7 +1931,23 @@ class TerminalBuddy:
                                 self.set_message(f"Nope! Answer: ({ans})\n{fact}", 50)
 
                     else:
-                        if ch in ('q', 'Q'): cleanup()
+                        if self.pending_curiosity and ch in ('1', '2'):
+                            pc = self.pending_curiosity
+                            self.pending_curiosity = None
+                            if ch == '1':
+                                snip = pc['snippet'][:300]
+                                q = pc['query']
+                                self._bg_proactive_call(
+                                    f"You looked up \"{q}\" and found: \"{snip}\". "
+                                    f"Share this discovery with your programmer friend like you JUST found it "
+                                    f"and are bursting to tell them! Make it nerdy and personal. 2-3 sentences max."
+                                )
+                                self.state = BotState.PROCESSING
+                                self.set_message(f"Ok, so about {q[:30]}...", 999)
+                            else:
+                                self.set_message("Ok, saving it to my RAM!", 25)
+                                self.state = BotState.TALKING
+                        elif ch in ('q', 'Q'): cleanup()
                         elif ch in ('t', 'T', '\r', '\n'): self.start_input()
                         elif ch in ('m', 'M'): self.trigger_motivate()
                         elif ch in ('j', 'J'): self.trigger_joke()

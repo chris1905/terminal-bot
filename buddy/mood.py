@@ -94,6 +94,10 @@ class Mood:
         """Unlocked something."""
         self.happiness = min(100, self.happiness + 10)
 
+    def on_fidget(self):
+        """Bot fidgeted — tiny energy drain (keeps energy meaningful)."""
+        self.energy = max(10, self.energy - 0.3)
+
     # ── queries ──────────────────────────────────────────────
 
     @property

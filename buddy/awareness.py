@@ -199,12 +199,25 @@ class GitCommitWatcher:
         self._last_mtime = self._get_mtime()
 
     def _find_commit_msg_file(self):
-        """Walk up from cwd to find .git/COMMIT_EDITMSG."""
+        """Walk up from cwd to find .git dir. Handles git worktrees."""
         current = os.path.abspath(self.cwd)
         while True:
-            candidate = os.path.join(current, ".git", "COMMIT_EDITMSG")
-            if os.path.exists(candidate):
-                return candidate
+            git_path = os.path.join(current, ".git")
+            if os.path.isfile(git_path):
+                # Git worktree: .git file contains "gitdir: /path/to/real/git/dir"
+                try:
+                    with open(git_path) as f:
+                        ref = f.read().strip()
+                    if ref.startswith("gitdir: "):
+                        real = ref[len("gitdir: "):].strip()
+                        if not os.path.isabs(real):
+                            real = os.path.normpath(os.path.join(current, real))
+                        return os.path.join(real, "COMMIT_EDITMSG")
+                except OSError:
+                    pass
+            elif os.path.isdir(git_path):
+                # Return the path even if COMMIT_EDITMSG doesn't exist yet
+                return os.path.join(git_path, "COMMIT_EDITMSG")
             parent = os.path.dirname(current)
             if parent == current:
                 return None
@@ -300,3 +313,113 @@ class ClipboardWatcher:
             if re.search(pattern, text):
                 return True
         return False
+
+
+class MusicWatcher:
+    """Watch Apple Music for now-playing info. macOS only, via osascript."""
+
+    APPLESCRIPT = (
+        'tell application "System Events"\n'
+        '  if (name of processes) contains "Music" then\n'
+        '    tell application "Music"\n'
+        '      if player state is playing then\n'
+        '        return (name of current track) & "|" & (artist of current track)\n'
+        '      end if\n'
+        '    end tell\n'
+        '  end if\n'
+        '  return ""\n'
+        'end tell'
+    )
+
+    def __init__(self):
+        import sys
+        self.current_track = None
+        self.current_artist = None
+        self.is_playing = False
+        self._available = sys.platform == "darwin"
+
+    def poll(self):
+        """
+        Check Apple Music state. Returns (track, artist) if a NEW song just
+        started; returns None otherwise. Updates self.is_playing.
+        Safe to call from a background thread.
+        """
+        if not self._available:
+            return None
+        try:
+            r = subprocess.run(
+                ["osascript", "-e", self.APPLESCRIPT],
+                capture_output=True, text=True, timeout=3
+            )
+            output = r.stdout.strip()
+            if "|" in output:
+                track, artist = output.split("|", 1)
+                track = track.strip()
+                artist = artist.strip()
+                is_new = (track != self.current_track or artist != self.current_artist)
+                self.current_track = track
+                self.current_artist = artist
+                self.is_playing = True
+                return (track, artist) if is_new else None
+            else:
+                self.is_playing = False
+                self.current_track = None
+                self.current_artist = None
+                return None
+        except Exception:
+            return None
+
+
+class WebResearcher:
+    """Fetches quick facts from DuckDuckGo and Wikipedia using only stdlib."""
+
+    def _make_ssl_ctx(self):
+        import ssl
+        try:
+            return ssl.create_default_context(cafile="/etc/ssl/cert.pem")
+        except Exception:
+            return ssl._create_unverified_context()
+
+    def fetch_ddg(self, query):
+        """Fetch DuckDuckGo instant answer. Returns text snippet or None."""
+        import urllib.request
+        import urllib.parse
+        import json
+        try:
+            q = urllib.parse.quote_plus(query)
+            url = (
+                f"https://api.duckduckgo.com/?q={q}"
+                f"&format=json&no_html=1&skip_disambig=1&no_redirect=1"
+            )
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "TerminalBuddy/2.0"}
+            )
+            with urllib.request.urlopen(req, timeout=5, context=self._make_ssl_ctx()) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = data.get("AbstractText", "").strip()
+            if not text:
+                for topic in data.get("RelatedTopics", []):
+                    if isinstance(topic, dict) and topic.get("Text"):
+                        text = topic["Text"].strip()
+                        break
+            return text[:400] if text else None
+        except Exception:
+            return None
+
+    def fetch_wikipedia(self, topic):
+        """Fetch Wikipedia page summary. Returns text or None."""
+        import urllib.request
+        import urllib.parse
+        import json
+        try:
+            slug = urllib.parse.quote(topic.replace(" ", "_"))
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+            req = urllib.request.Request(
+                url, headers={"User-Agent": "TerminalBuddy/2.0"}
+            )
+            with urllib.request.urlopen(req, timeout=5, context=self._make_ssl_ctx()) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            extract = data.get("extract", "").strip()
+            return extract[:400] if extract else None
+        except Exception:
+            return None
